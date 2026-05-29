@@ -1,6 +1,13 @@
+# Desktop GUI (segmenter_gui.py)
 customtkinter>=5.2
 Pillow>=10.0
-opencv-python>=4.8
-numpy>=1.24
 requests>=2.31
 pyinstaller>=6.0
+
+# Shared processing core (segmenter_core.py)
+opencv-python>=4.8
+numpy>=1.24
+
+# Web server (server.py / launch.py)
+fastapi>=0.110
+uvicorn[standard]>=0.29
