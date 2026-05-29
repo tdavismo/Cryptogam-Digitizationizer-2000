@@ -31,7 +31,7 @@ echo.
 
 REM --- Install dependencies ---------------------------------------------------
 echo [1/3] Installing Python dependencies...
-%PY% -m pip install --upgrade customtkinter Pillow opencv-python numpy pyinstaller
+%PY% -m pip install --upgrade customtkinter Pillow opencv-python numpy requests pyinstaller
 if errorlevel 1 (
     echo.
     echo ERROR: Dependency install failed. See output above.

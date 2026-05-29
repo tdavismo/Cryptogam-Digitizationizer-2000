@@ -4,7 +4,10 @@ Herbarium Packet Segmenter
 GUI tool for batch-segmenting bryophyte/lichen packet labels from photographs.
 """
 
+import concurrent.futures
 import csv
+import datetime
+import json
 import os
 import threading
 from dataclasses import dataclass, field
@@ -16,6 +19,7 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
+import requests
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -49,6 +53,9 @@ _FLAG_STYLE = {
     "oversize": ("⚠  Possible merged packets", _C["grey"], _C["deep_green"]),
 }
 
+VVGO_SERVER_URL   = "https://vouchervision-go-738307415303.us-central1.run.app/"
+VVGO_DEFAULT_PROMPT = "SLTPvM_default.yaml"
+
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
 
@@ -69,7 +76,7 @@ class SegSettings:
     rectangularity_min: float = 0.12
     aspect_min: float = 0.20
     aspect_max: float = 5.0
-    deskew: bool = False
+    deskew: bool = True
 
 
 # ─── Segmentation core ────────────────────────────────────────────────────────
@@ -523,6 +530,60 @@ def resegment_or_bisect(crop_path: Path, output_dir: Path,
     raise RuntimeError("Could not write replacement crops.")
 
 
+# ─── Utilities ────────────────────────────────────────────────────────────────
+
+def _auto_output_dir(input_path: Path) -> Path:
+    """Return a dated subdirectory of the input folder: DD-MON-YYYY-PACKETS."""
+    today = datetime.date.today()
+    folder_name = today.strftime("%d-%b-%Y").upper() + "-PACKETS"
+    return input_path / folder_name
+
+
+class _ToolTip:
+    """Lightweight hover tooltip for any tkinter / CTk widget."""
+
+    _DELAY_MS = 600
+
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text   = text
+        self._tip: tk.Toplevel | None = None
+        self._after_id = None
+        widget.bind("<Enter>",   self._schedule, add="+")
+        widget.bind("<Leave>",   self._cancel,   add="+")
+        widget.bind("<Destroy>", self._cancel,   add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self._widget.after(self._DELAY_MS, self._show)
+
+    def _cancel(self, _event=None):
+        if self._after_id:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+    def _show(self):
+        try:
+            x = self._widget.winfo_rootx() + 16
+            y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        except Exception:
+            return
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self._tip, text=self._text,
+            justify="left",
+            background=_C["deep_green"], foreground=_C["warm_white"],
+            relief="flat", padx=9, pady=5,
+            font=("Segoe UI", 9),
+            wraplength=270,
+        ).pack()
+
+
 # ─── Manual crop editor ───────────────────────────────────────────────────────
 
 class ManualCropEditor(ctk.CTkToplevel):
@@ -541,7 +602,9 @@ class ManualCropEditor(ctk.CTkToplevel):
     """
 
     def __init__(self, master, image_path: Path,
-                 output_dir: Path, s: SegSettings):
+                 output_dir: Path, s: SegSettings,
+                 overlay_bgr: np.ndarray | None = None,
+                 on_save: "callable | None" = None):
         super().__init__(master)
         self.title(f"Manual crop editor — {image_path.name}")
         self.geometry("980x680")
@@ -551,6 +614,7 @@ class ManualCropEditor(ctk.CTkToplevel):
         self._image_path = image_path
         self._output_dir = output_dir
         self._s = s
+        self._on_save = on_save  # called with no args after a successful save
 
         # Load source image and apply top-crop
         raw = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
@@ -559,7 +623,12 @@ class ManualCropEditor(ctk.CTkToplevel):
         bgr_full = _to_bgr8(raw)
         ih = bgr_full.shape[0]
         top_px = int(ih * s.top_crop_frac)
-        self._bgr = bgr_full[top_px:, :]   # working image (top-cropped)
+        clean = bgr_full[top_px:, :]
+
+        # _bgr_display: what is rendered on the canvas (may include overlay boxes)
+        # _bgr_save:    what is actually cropped when saving (always clean)
+        self._bgr_display = overlay_bgr if overlay_bgr is not None else clean
+        self._bgr_save    = clean
 
         # View state
         self._zoom: float = 1.0
@@ -729,7 +798,7 @@ class ManualCropEditor(ctk.CTkToplevel):
     def _display_scale(self) -> float:
         cw = max(self._canvas.winfo_width(), 1)
         ch = max(self._canvas.winfo_height(), 1)
-        ih, iw = self._bgr.shape[:2]
+        ih, iw = self._bgr_display.shape[:2]
         base = min(cw / iw, ch / ih)
         return base * self._zoom
 
@@ -737,8 +806,8 @@ class ManualCropEditor(ctk.CTkToplevel):
         """Convert canvas pixel → image pixel coordinates."""
         ox, oy = self._canvas_origin()
         scale = self._display_scale()
-        iw = self._bgr.shape[1]
-        ih = self._bgr.shape[0]
+        iw = self._bgr_display.shape[1]
+        ih = self._bgr_display.shape[0]
         ix = (cx - ox) / scale + iw / 2
         iy = (cy - oy) / scale + ih / 2
         return int(ix), int(iy)
@@ -747,8 +816,8 @@ class ManualCropEditor(ctk.CTkToplevel):
         """Convert image pixel → canvas pixel coordinates."""
         ox, oy = self._canvas_origin()
         scale = self._display_scale()
-        iw = self._bgr.shape[1]
-        ih = self._bgr.shape[0]
+        iw = self._bgr_display.shape[1]
+        ih = self._bgr_display.shape[0]
         cx = (ix - iw / 2) * scale + ox
         cy = (iy - ih / 2) * scale + oy
         return int(cx), int(cy)
@@ -757,12 +826,12 @@ class ManualCropEditor(ctk.CTkToplevel):
 
     def _render(self):
         """Redraw: background image then all boxes."""
-        ih, iw = self._bgr.shape[:2]
+        ih, iw = self._bgr_display.shape[:2]
         scale = self._display_scale()
         new_w = max(1, int(iw * scale))
         new_h = max(1, int(ih * scale))
 
-        rgb = cv2.cvtColor(self._bgr, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(self._bgr_display, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(rgb).resize((new_w, new_h), Image.LANCZOS)
         photo = ImageTk.PhotoImage(pil)
 
@@ -879,7 +948,7 @@ class ManualCropEditor(ctk.CTkToplevel):
         # Convert to image coordinates and clamp to image bounds
         ix1, iy1 = self._canvas_to_img(x0, y0)
         ix2, iy2 = self._canvas_to_img(event.x, event.y)
-        ih, iw = self._bgr.shape[:2]
+        ih, iw = self._bgr_display.shape[:2]
         ix1 = max(0, min(iw - 1, ix1))
         ix2 = max(0, min(iw - 1, ix2))
         iy1 = max(0, min(ih - 1, iy1))
@@ -926,13 +995,13 @@ class ManualCropEditor(ctk.CTkToplevel):
         if suffix not in IMAGE_EXTS:
             suffix = ".jpg"
         pad = self._pad_var.get()
-        ih, iw = self._bgr.shape[:2]
+        ih, iw = self._bgr_display.shape[:2]
         saved = []
 
         for i, (x1, y1, x2, y2) in enumerate(self._boxes, 1):
             w = x2 - x1
             h = y2 - y1
-            crop, _ = _padded_crop(self._bgr, x1, y1, w, h, pad)
+            crop, _ = _padded_crop(self._bgr_save, x1, y1, w, h, pad)
             if crop is None or crop.size == 0:
                 continue
             out_path = self._output_dir / f"{stem}_manual_{i:02d}{suffix}"
@@ -945,10 +1014,607 @@ class ManualCropEditor(ctk.CTkToplevel):
                 f"Saved {len(saved)} crop(s) to:\n{self._output_dir}",
                 parent=self,
             )
+            if self._on_save:
+                self._on_save()
             self.destroy()
         else:
             messagebox.showerror(
                 "Error", "Could not save any crops.", parent=self)
+
+
+# ─── VoucherVision Go submission dialog ───────────────────────────────────────
+
+class VVGoDialog(ctk.CTkToplevel):
+    """
+    Submit all crop images in the output folder to the VoucherVision Go API.
+    Default LLM model, label collage skipped, WFO validation skipped.
+    JSON results are saved alongside the crops (or in a user-chosen sub-folder).
+    """
+
+    def __init__(self, master, output_dir: Path):
+        super().__init__(master)
+        self.title("Submit to VoucherVision Go")
+        self.geometry("560x530")
+        self.resizable(False, False)
+        self.grab_set()
+
+        self._output_dir = output_dir
+        self._cancel_event = threading.Event()
+
+        self.configure(fg_color=_C["warm_white"])
+        self._build_ui()
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self, text="VoucherVision Go",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=_C["deep_green"],
+        ).grid(row=0, column=0, sticky="w", padx=20, pady=(16, 2))
+
+        ctk.CTkLabel(
+            self,
+            text="Submit segmented packets for automated text extraction.\n"
+                 "Results are saved as JSON files for import into VVGo Editor.",
+            font=ctk.CTkFont(size=11), text_color=_C["grey"], justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 10))
+
+        ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
+            row=2, column=0, sticky="ew", padx=14)
+
+        # API token row
+        ctk.CTkLabel(self, text="API Token",
+                     text_color=_C["deep_green"]).grid(
+            row=3, column=0, sticky="w", padx=20, pady=(12, 2))
+
+        tok_fr = ctk.CTkFrame(self, fg_color="transparent")
+        tok_fr.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
+        tok_fr.grid_columnconfigure(0, weight=1)
+
+        self._token_var = tk.StringVar()
+        self._token_entry = ctk.CTkEntry(
+            tok_fr, textvariable=self._token_var, show="•",
+            fg_color=_C["warm_white"], border_color=_C["rule"],
+            text_color=_C["deep_green"],
+            placeholder_text="Paste your VVGo auth token here…",
+        )
+        self._token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+
+        self._show_tok = tk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            tok_fr, text="Show", variable=self._show_tok,
+            fg_color=_C["mid_green"], hover_color=_C["soft_green"],
+            checkmark_color="white", text_color=_C["grey"], width=16,
+            command=lambda: self._token_entry.configure(
+                show="" if self._show_tok.get() else "•"),
+        ).grid(row=0, column=1)
+
+        # JSON output folder
+        ctk.CTkLabel(self, text="JSON output folder",
+                     text_color=_C["deep_green"]).grid(
+            row=5, column=0, sticky="w", padx=20, pady=(4, 2))
+
+        json_fr = ctk.CTkFrame(self, fg_color="transparent")
+        json_fr.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 10))
+        json_fr.grid_columnconfigure(0, weight=1)
+
+        self._json_dir_var = tk.StringVar(
+            value=str(self._output_dir / "vvgo_json"))
+        ctk.CTkEntry(
+            json_fr, textvariable=self._json_dir_var,
+            fg_color=_C["warm_white"], border_color=_C["rule"],
+            text_color=_C["deep_green"],
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkButton(
+            json_fr, text="Browse", width=70,
+            fg_color=_C["cream"], hover_color=_C["soft_green"],
+            text_color=_C["deep_green"], border_color=_C["rule"], border_width=1,
+            command=self._browse_json,
+        ).grid(row=0, column=1)
+
+        ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
+            row=7, column=0, sticky="ew", padx=14, pady=6)
+
+        # Parallel workers
+        wrk_fr = ctk.CTkFrame(self, fg_color="transparent")
+        wrk_fr.grid(row=8, column=0, sticky="ew", padx=20, pady=(0, 6))
+        wrk_fr.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(wrk_fr, text="Parallel workers",
+                     text_color=_C["deep_green"]).grid(
+            row=0, column=0, sticky="w")
+        self._workers_var = tk.IntVar(value=4)
+        self._workers_lbl = ctk.CTkLabel(wrk_fr, text="4", width=26,
+                                          text_color=_C["grey"])
+        self._workers_lbl.grid(row=0, column=2)
+        ctk.CTkSlider(
+            wrk_fr, from_=1, to=16, number_of_steps=15,
+            variable=self._workers_var,
+            button_color=_C["mid_green"], button_hover_color=_C["deep_green"],
+            progress_color=_C["mid_green"],
+            command=lambda v: self._workers_lbl.configure(text=str(int(float(v)))),
+        ).grid(row=0, column=1, sticky="ew", padx=8)
+
+        ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
+            row=9, column=0, sticky="ew", padx=14, pady=4)
+
+        # Progress
+        self._prog_bar = ctk.CTkProgressBar(
+            self, fg_color=_C["soft_green"], progress_color=_C["mid_green"])
+        self._prog_bar.set(0)
+        self._prog_bar.grid(row=10, column=0, sticky="ew", padx=20, pady=(4, 0))
+
+        self._prog_lbl = ctk.CTkLabel(
+            self, text="", font=ctk.CTkFont(size=11), text_color=_C["grey"])
+        self._prog_lbl.grid(row=11, column=0, sticky="w", padx=20, pady=(2, 0))
+
+        self._log_box = ctk.CTkTextbox(
+            self, height=80,
+            font=ctk.CTkFont(size=10, family="Courier New"),
+            fg_color=_C["warm_white"], text_color=_C["deep_green"],
+            border_color=_C["rule"], border_width=1,
+        )
+        self._log_box.grid(row=12, column=0, sticky="ew", padx=16, pady=6)
+        self._log_box.configure(state="disabled")
+
+        # Action buttons
+        btn_fr = ctk.CTkFrame(self, fg_color="transparent")
+        btn_fr.grid(row=13, column=0, sticky="ew", padx=16, pady=(0, 16))
+        btn_fr.grid_columnconfigure(0, weight=1)
+        btn_fr.grid_columnconfigure(1, weight=1)
+
+        self._submit_btn = ctk.CTkButton(
+            btn_fr, text="Submit all crops",
+            fg_color=_C["mid_green"], hover_color=_C["deep_green"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._submit,
+        )
+        self._submit_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        ctk.CTkButton(
+            btn_fr, text="Close",
+            fg_color="transparent", hover_color=_C["soft_green"],
+            text_color=_C["grey"], border_color=_C["rule"], border_width=1,
+            command=self.destroy,
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _browse_json(self):
+        d = filedialog.askdirectory(
+            title="Select folder for JSON outputs", parent=self)
+        if d:
+            self._json_dir_var.set(d)
+
+    def _vlog(self, msg: str):
+        self._log_box.configure(state="normal")
+        self._log_box.insert("end", msg + "\n")
+        self._log_box.see("end")
+        self._log_box.configure(state="disabled")
+
+    # ── Submission ────────────────────────────────────────────────────────────
+
+    def _submit(self):
+        token = self._token_var.get().strip()
+        if not token:
+            messagebox.showerror(
+                "Token required",
+                "Please enter your VoucherVision Go API token.\n\n"
+                "Tokens are available at:\n"
+                "https://vouchervision-go-738307415303.us-central1.run.app/login",
+                parent=self,
+            )
+            return
+
+        json_dir = Path(self._json_dir_var.get().strip())
+        images = sorted(
+            p for p in self._output_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        )
+        if not images:
+            messagebox.showinfo(
+                "No images", "No image files found in the output folder.",
+                parent=self)
+            return
+
+        json_dir.mkdir(parents=True, exist_ok=True)
+        max_workers = self._workers_var.get()
+        total = len(images)
+        self._submit_btn.configure(state="disabled", text="Submitting…")
+        self._cancel_event.clear()
+        self._prog_bar.set(0)
+        self._vlog(f"Submitting {total} image(s)…")
+
+        def _process_one(img_path: Path) -> dict:
+            if self._cancel_event.is_set():
+                return {"name": img_path.name, "ok": False, "error": "cancelled"}
+            try:
+                with img_path.open("rb") as fh:
+                    resp = requests.post(
+                        f"{VVGO_SERVER_URL}process",
+                        headers={"Authorization": f"Bearer {token}"},
+                        files={"file": (img_path.name, fh, "image/jpeg")},
+                        data={
+                            "prompt": VVGO_DEFAULT_PROMPT,
+                            "skip_label_collage": "true",
+                            # include_wfo omitted → server default = false
+                        },
+                        timeout=180,
+                    )
+                resp.raise_for_status()
+                out_path = json_dir / f"{img_path.stem}.json"
+                out_path.write_text(
+                    json.dumps(resp.json(), indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                return {"name": img_path.name, "ok": True, "error": ""}
+            except Exception as exc:
+                return {"name": img_path.name, "ok": False, "error": str(exc)}
+
+        done_count = 0
+        error_count = 0
+
+        def worker():
+            nonlocal done_count, error_count
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers) as ex:
+                futures = {ex.submit(_process_one, p): p for p in images}
+                for fut in concurrent.futures.as_completed(futures):
+                    res = fut.result()
+                    done_count += 1
+                    if res["ok"]:
+                        msg = f"  ✓  {res['name']}"
+                    else:
+                        error_count += 1
+                        msg = f"  ✗  {res['name']}  — {res['error']}"
+                    prog = done_count / total
+
+                    def _upd(m=msg, p=prog, d=done_count):
+                        self._vlog(m)
+                        self._prog_bar.set(p)
+                        self._prog_lbl.configure(text=f"{d} / {total}")
+                    self.after(0, _upd)
+
+            def _done():
+                ok = done_count - error_count
+                self._vlog(f"\nDone.  {ok} / {total} succeeded.")
+                self._submit_btn.configure(state="normal", text="Submit all crops")
+                if error_count == 0:
+                    self._prog_lbl.configure(text=f"✓  All {total} succeeded")
+            self.after(0, _done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
+# ─── Crop QC gallery ──────────────────────────────────────────────────────────
+
+class CropGallery(ctk.CTkToplevel):
+    """
+    Scrollable thumbnail gallery of all segmented crops for final visual QC.
+    Click a thumbnail to enlarge it in the right panel.
+    Flag individual crops for recapture, or re-open the manual crop editor.
+    """
+
+    THUMB_W = 150
+    THUMB_H = 120
+    COLS    = 4
+
+    def __init__(self, master, output_dir: Path,
+                 all_results: list, s: SegSettings):
+        super().__init__(master)
+        self.title("Crop QC Gallery")
+        self.geometry("1100x680")
+        self.minsize(800, 500)
+
+        self._output_dir  = output_dir
+        self._all_results = all_results
+        self._s           = s
+        self._app         = master          # used to call _open_manual_editor
+
+        # Map crop file → source ImageResult (for Redraw button)
+        self._crop_to_result: dict[Path, "ImageResult"] = {}
+        for r in all_results:
+            for p, _w, _h in r.crop_info:
+                self._crop_to_result[p] = r
+
+        # Collect all crop images in the output folder
+        self._all_crops: list[Path] = sorted(
+            p for p in output_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        )
+
+        self._flagged:    set[Path] = set()
+        self._selected:   Path | None = None
+        self._thumb_refs: dict[Path, ImageTk.PhotoImage] = {}  # prevent GC
+
+        self.configure(fg_color=_C["warm_white"])
+        self._build_ui()
+        # Load thumbs after window is shown so dimensions are valid
+        self.after(150, self._populate_grid)
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_rowconfigure(0, weight=1)
+
+        # ── Left: scrollable thumbnail grid ──────────────────────────────────
+        left = ctk.CTkFrame(self, corner_radius=0, fg_color=_C["cream"])
+        left.grid(row=0, column=0, sticky="nsew")
+        left.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(1, weight=1)
+
+        hdr = ctk.CTkFrame(left, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        self._gallery_lbl = ctk.CTkLabel(
+            hdr, text="Loading thumbnails…",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=_C["deep_green"],
+        )
+        self._gallery_lbl.grid(row=0, column=0, sticky="w")
+
+        # Filter chips
+        filt_fr = ctk.CTkFrame(hdr, fg_color="transparent")
+        filt_fr.grid(row=0, column=1, sticky="e")
+        for label, val in [("All", "all"), ("OK", "ok"), ("Flagged", "flagged")]:
+            ctk.CTkButton(
+                filt_fr, text=label, width=58,
+                fg_color=_C["cream"], hover_color=_C["soft_green"],
+                text_color=_C["deep_green"], border_color=_C["rule"],
+                border_width=1, font=ctk.CTkFont(size=11),
+                command=lambda v=val: self._apply_filter(v),
+            ).pack(side="left", padx=2)
+
+        self._scroll = ctk.CTkScrollableFrame(
+            left, fg_color=_C["warm_white"],
+            scrollbar_button_color=_C["rule"],
+            scrollbar_button_hover_color=_C["grey"],
+        )
+        self._scroll.grid(row=1, column=0, sticky="nsew", padx=4, pady=(0, 4))
+        for c in range(self.COLS):
+            self._scroll.grid_columnconfigure(c, weight=1)
+
+        # ── Right: detail panel ───────────────────────────────────────────────
+        right = ctk.CTkFrame(self, width=290, corner_radius=0,
+                              fg_color=_C["cream"])
+        right.grid(row=0, column=1, sticky="nsew")
+        right.grid_propagate(False)
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            right, text="Selected crop",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=_C["deep_green"],
+        ).grid(row=0, column=0, sticky="w", padx=12, pady=(12, 2))
+
+        self._sel_lbl = ctk.CTkLabel(
+            right, text="Click a thumbnail",
+            font=ctk.CTkFont(size=10), text_color=_C["grey"], wraplength=260,
+        )
+        self._sel_lbl.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
+
+        self._prev_canvas = tk.Canvas(
+            right, bg=_C["deep_green"], highlightthickness=0,
+            width=268, height=230,
+        )
+        self._prev_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=4)
+        self._prev_photo = None
+
+        ctk.CTkFrame(right, height=1, fg_color=_C["rule"]).grid(
+            row=3, column=0, sticky="ew", padx=8, pady=6)
+
+        self._flag_btn = ctk.CTkButton(
+            right, text="🚩  Flag for recapture",
+            fg_color=_C["err"], hover_color=_C["err_hover"],
+            font=ctk.CTkFont(size=11), state="disabled",
+            command=self._toggle_flag,
+        )
+        self._flag_btn.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        self._redraw_btn = ctk.CTkButton(
+            right, text="✏  Redraw boundary",
+            fg_color=_C["deep_green"], hover_color=_C["mid_green"],
+            font=ctk.CTkFont(size=11), state="disabled",
+            command=self._redraw_selected,
+        )
+        self._redraw_btn.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        ctk.CTkFrame(right, height=1, fg_color=_C["rule"]).grid(
+            row=6, column=0, sticky="ew", padx=8, pady=6)
+
+        self._export_btn = ctk.CTkButton(
+            right, text="Export flagged list",
+            fg_color="transparent", hover_color=_C["soft_green"],
+            text_color=_C["grey"], border_color=_C["rule"], border_width=1,
+            font=ctk.CTkFont(size=11), state="disabled",
+            command=self._export_flagged,
+        )
+        self._export_btn.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 4))
+
+        ctk.CTkButton(
+            right, text="Close",
+            fg_color="transparent", hover_color=_C["soft_green"],
+            text_color=_C["grey"], border_color=_C["rule"], border_width=1,
+            font=ctk.CTkFont(size=11), command=self.destroy,
+        ).grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 16))
+
+    # ── Grid population ───────────────────────────────────────────────────────
+
+    def _populate_grid(self, crops: "list[Path] | None" = None):
+        for w in self._scroll.winfo_children():
+            w.destroy()
+        if crops is None:
+            crops = self._all_crops
+        self._gallery_lbl.configure(
+            text=f"All crops — {len(self._all_crops)} images")
+        for i, p in enumerate(crops):
+            self._make_card(p, i // self.COLS, i % self.COLS)
+
+    def _make_thumb(self, path: Path) -> "ImageTk.PhotoImage | None":
+        if path in self._thumb_refs:
+            return self._thumb_refs[path]
+        try:
+            raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if raw is None:
+                return None
+            bgr = _to_bgr8(raw)
+            h, w = bgr.shape[:2]
+            scale = min(self.THUMB_W / w, self.THUMB_H / h)
+            nw = max(1, int(w * scale))
+            nh = max(1, int(h * scale))
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            pil = Image.fromarray(rgb).resize((nw, nh), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(pil)
+            self._thumb_refs[path] = photo
+            return photo
+        except Exception:
+            return None
+
+    def _make_card(self, path: Path, row: int, col: int):
+        is_flagged = path in self._flagged
+        border_col = _C["err"] if is_flagged else _C["rule"]
+
+        card = ctk.CTkFrame(
+            self._scroll, fg_color=_C["cream"],
+            border_color=border_col, border_width=1,
+        )
+        card.grid(row=row, column=col, padx=4, pady=4, sticky="nsew")
+        card.grid_columnconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            card, bg=_C["deep_green"],
+            width=self.THUMB_W, height=self.THUMB_H,
+            highlightthickness=0,
+        )
+        canvas.grid(row=0, column=0, padx=4, pady=(4, 2))
+
+        photo = self._make_thumb(path)
+        if photo:
+            canvas.create_image(
+                self.THUMB_W // 2, self.THUMB_H // 2,
+                anchor="center", image=photo,
+            )
+
+        name = path.name
+        if len(name) > 24:
+            name = name[:11] + "…" + name[-11:]
+        ctk.CTkLabel(
+            card, text=name, font=ctk.CTkFont(size=9), text_color=_C["grey"],
+        ).grid(row=1, column=0, padx=4, pady=(0, 4))
+
+        for w in (canvas, card):
+            w.bind("<Button-1>", lambda _e, p=path: self._select(p))
+
+    # ── Selection & preview ───────────────────────────────────────────────────
+
+    def _select(self, path: Path):
+        self._selected = path
+        self._sel_lbl.configure(text=path.name)
+        self._flag_btn.configure(state="normal")
+        self._redraw_btn.configure(state="normal")
+
+        if path in self._flagged:
+            self._flag_btn.configure(
+                text="🚩  Unflag", fg_color=_C["grey"],
+                hover_color=_C["deep_green"])
+        else:
+            self._flag_btn.configure(
+                text="🚩  Flag for recapture", fg_color=_C["err"],
+                hover_color=_C["err_hover"])
+
+        # Enlarged preview
+        try:
+            raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if raw is not None:
+                bgr = _to_bgr8(raw)
+                cw = self._prev_canvas.winfo_width() or 268
+                ch = self._prev_canvas.winfo_height() or 230
+                h, w = bgr.shape[:2]
+                scale = min(cw / w, ch / h)
+                nw = max(1, int(w * scale))
+                nh = max(1, int(h * scale))
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                pil = Image.fromarray(rgb).resize((nw, nh), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(pil)
+                self._prev_canvas.delete("all")
+                self._prev_photo = photo
+                self._prev_canvas.create_image(
+                    cw // 2, ch // 2, anchor="center", image=photo)
+        except Exception:
+            pass
+
+    # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _toggle_flag(self):
+        if self._selected is None:
+            return
+        if self._selected in self._flagged:
+            self._flagged.discard(self._selected)
+            self._flag_btn.configure(
+                text="🚩  Flag for recapture", fg_color=_C["err"],
+                hover_color=_C["err_hover"])
+        else:
+            self._flagged.add(self._selected)
+            self._flag_btn.configure(
+                text="🚩  Unflag", fg_color=_C["grey"],
+                hover_color=_C["deep_green"])
+        # Refresh card border colour
+        self._apply_filter("all")
+        self._export_btn.configure(
+            state="normal" if self._flagged else "disabled")
+
+    def _redraw_selected(self):
+        if self._selected is None:
+            return
+        result = self._crop_to_result.get(self._selected)
+        if result is None:
+            messagebox.showinfo(
+                "Source not found",
+                "Cannot find the source image for this crop.\n"
+                "It may have been produced by a Fix or manual-edit step.",
+                parent=self,
+            )
+            return
+        if hasattr(self._app, "_open_manual_editor"):
+            self._app._open_manual_editor(result.path, result=result)
+
+    def _apply_filter(self, mode: str):
+        for w in self._scroll.winfo_children():
+            w.destroy()
+        if mode == "all":
+            crops = self._all_crops
+        elif mode == "flagged":
+            crops = [p for p in self._all_crops if p in self._flagged]
+        else:
+            crops = [p for p in self._all_crops if p not in self._flagged]
+        label = {"all": "All", "flagged": "Flagged", "ok": "OK"}[mode]
+        self._gallery_lbl.configure(
+            text=f"{label} crops — {len(crops)} of {len(self._all_crops)}")
+        for i, p in enumerate(crops):
+            self._make_card(p, i // self.COLS, i % self.COLS)
+
+    def _export_flagged(self):
+        if not self._flagged:
+            return
+        out = filedialog.asksaveasfilename(
+            title="Save flagged crop list",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            parent=self,
+        )
+        if out:
+            Path(out).write_text(
+                "\n".join(str(p) for p in sorted(self._flagged)),
+                encoding="utf-8",
+            )
+            messagebox.showinfo("Saved", f"Flagged list saved:\n{out}", parent=self)
 
 
 # ─── GUI ─────────────────────────────────────────────────────────────────────
@@ -974,9 +1640,10 @@ class App(ctk.CTk):
         self._pan_y: int = 0
         self._drag_start: tuple | None = None
 
-        # Context kept from the most recent batch (used by Fix buttons)
-        self._last_out_dir: Path | None = None
-        self._last_settings: SegSettings | None = None
+        # Context kept from the most recent batch (used by Fix / Gallery / VVGo)
+        self._last_out_dir:    Path | None = None
+        self._last_settings:   SegSettings | None = None
+        self._last_all_results: list = []
 
         self.configure(fg_color=_C["warm_white"])
         self._build_ui()
@@ -1096,12 +1763,29 @@ class App(ctk.CTk):
         self._review_fr = rev_fr
         rev_fr.grid_remove()
 
-        # Open output button
+        # Post-batch action buttons (hidden / disabled until batch completes)
+        post_fr = ctk.CTkFrame(p, fg_color="transparent")
+        post_fr.grid(row=9, column=0, sticky="ew", padx=14, pady=(2, 0))
+        post_fr.grid_columnconfigure(0, weight=1)
+        post_fr.grid_columnconfigure(1, weight=1)
+
+        self._gallery_btn = ctk.CTkButton(
+            post_fr, text="🖼  QC Gallery",
+            fg_color=_C["deep_green"], hover_color=_C["mid_green"],
+            state="disabled", command=self._open_gallery)
+        self._gallery_btn.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+
+        self._vvgo_btn = ctk.CTkButton(
+            post_fr, text="☁  Submit to VVGo",
+            fg_color=_C["deep_green"], hover_color=_C["mid_green"],
+            state="disabled", command=self._open_vvgo)
+        self._vvgo_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
         self._open_btn = ctk.CTkButton(
             p, text="Open Output Folder",
             command=self._open_output, state="disabled",
             fg_color=_C["mid_green"], hover_color=_C["deep_green"])
-        self._open_btn.grid(row=9, column=0, sticky="ew", padx=14, pady=(2, 14))
+        self._open_btn.grid(row=10, column=0, sticky="ew", padx=14, pady=(4, 14))
 
     def _build_settings(self, p, row):
         fr = ctk.CTkFrame(p, fg_color=_C["soft_green"],
@@ -1116,27 +1800,41 @@ class App(ctk.CTk):
         ).grid(row=0, column=0, columnspan=3, sticky="w", padx=10, pady=(8, 4))
 
         # Top crop slider
-        ctk.CTkLabel(fr, text="Top crop",
-                     text_color=_C["deep_green"]).grid(
-            row=1, column=0, sticky="w", padx=10)
+        _tc_lbl = ctk.CTkLabel(fr, text="Top crop",
+                               text_color=_C["deep_green"])
+        _tc_lbl.grid(row=1, column=0, sticky="w", padx=10)
+        _ToolTip(_tc_lbl,
+                 "Remove this percentage from the top of every image before "
+                 "detection. Use to exclude a fixed ruler, colour card, or "
+                 "camera rig that appears at the top edge of every shot.")
         self._crop_var = tk.DoubleVar(value=0.0)
         self._crop_lbl = ctk.CTkLabel(fr, text=" 0%", width=34,
                                        text_color=_C["grey"])
         self._crop_lbl.grid(row=1, column=2, padx=(0, 8))
-        ctk.CTkSlider(
+        _crop_slider = ctk.CTkSlider(
             fr, from_=0, to=30, number_of_steps=30,
             variable=self._crop_var,
             button_color=_C["mid_green"], button_hover_color=_C["deep_green"],
             progress_color=_C["mid_green"], fg_color=_C["rule"],
             command=lambda v: self._crop_lbl.configure(text=f"{int(float(v))}%"),
-        ).grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        )
+        _crop_slider.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        _ToolTip(_crop_slider,
+                 "Remove this percentage from the top of every image before "
+                 "detection. Use to exclude a fixed ruler, colour card, or "
+                 "camera rig that appears at the top edge of every shot.")
 
         # Foreground mode
-        ctk.CTkLabel(fr, text="Foreground",
-                     text_color=_C["deep_green"]).grid(
-            row=2, column=0, sticky="w", padx=10)
+        _fg_lbl = ctk.CTkLabel(fr, text="Foreground",
+                               text_color=_C["deep_green"])
+        _fg_lbl.grid(row=2, column=0, sticky="w", padx=10)
+        _ToolTip(_fg_lbl,
+                 "Light: packets are lighter than the background (most common "
+                 "with a dark mat or table).\nDark: packets are darker than "
+                 "the background.\nAuto: tries both and keeps whichever finds "
+                 "more packets — slower but useful when conditions vary.")
         self._fg_var = tk.StringVar(value="Light")
-        ctk.CTkOptionMenu(
+        _fg_menu = ctk.CTkOptionMenu(
             fr, values=["Light", "Dark", "Auto (slower)"],
             variable=self._fg_var,
             fg_color=_C["cream"], button_color=_C["mid_green"],
@@ -1144,7 +1842,13 @@ class App(ctk.CTk):
             dropdown_fg_color=_C["warm_white"],
             dropdown_hover_color=_C["soft_green"],
             dropdown_text_color=_C["deep_green"],
-        ).grid(row=2, column=1, columnspan=2, sticky="ew", padx=4, pady=4)
+        )
+        _fg_menu.grid(row=2, column=1, columnspan=2, sticky="ew", padx=4, pady=4)
+        _ToolTip(_fg_menu,
+                 "Light: packets are lighter than the background (most common "
+                 "with a dark mat or table).\nDark: packets are darker than "
+                 "the background.\nAuto: tries both and keeps whichever finds "
+                 "more packets — slower but useful when conditions vary.")
 
         # Advanced toggle
         self._adv_open = False
@@ -1176,57 +1880,109 @@ class App(ctk.CTk):
             progress_color=_C["mid_green"], fg_color=_C["rule"],
         )
 
-        ctk.CTkLabel(p, text="Threshold", font=ctk.CTkFont(size=11),
-                     text_color=_C["deep_green"]).grid(
-            row=0, column=0, sticky="w", padx=10)
+        _thresh_lbl = ctk.CTkLabel(p, text="Threshold", font=ctk.CTkFont(size=11),
+                                   text_color=_C["deep_green"])
+        _thresh_lbl.grid(row=0, column=0, sticky="w", padx=10)
+        _ToolTip(_thresh_lbl,
+                 "Algorithm used to separate packets from the background.\n"
+                 "Otsu: automatic global threshold — best for consistent "
+                 "lighting.\nAdaptive: local thresholding — handles uneven "
+                 "illumination.\nCanny: edge-based — useful when tonal "
+                 "contrast is low.")
         self._thresh_var = tk.StringVar(value="Otsu")
-        ctk.CTkOptionMenu(
+        _thresh_menu = ctk.CTkOptionMenu(
             p, values=["Otsu", "Adaptive", "Canny"],
             variable=self._thresh_var, **_om_kw,
-        ).grid(row=0, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
+        )
+        _thresh_menu.grid(row=0, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
+        _ToolTip(_thresh_menu,
+                 "Algorithm used to separate packets from the background.\n"
+                 "Otsu: automatic global threshold — best for consistent "
+                 "lighting.\nAdaptive: local thresholding — handles uneven "
+                 "illumination.\nCanny: edge-based — useful when tonal "
+                 "contrast is low.")
 
-        ctk.CTkLabel(p, text="Contrast", font=ctk.CTkFont(size=11),
-                     text_color=_C["deep_green"]).grid(
-            row=1, column=0, sticky="w", padx=10)
+        _cont_lbl = ctk.CTkLabel(p, text="Contrast", font=ctk.CTkFont(size=11),
+                                  text_color=_C["deep_green"])
+        _cont_lbl.grid(row=1, column=0, sticky="w", padx=10)
+        _ToolTip(_cont_lbl,
+                 "Pre-processing applied before thresholding.\n"
+                 "None: no adjustment.\nNormalize: stretches the histogram "
+                 "to the full 0–255 range.\nCLAHE: adaptive histogram "
+                 "equalisation — improves local contrast without "
+                 "over-brightening.\nBoth: normalise then CLAHE.")
         self._contrast_var = tk.StringVar(value="None")
-        ctk.CTkOptionMenu(
+        _cont_menu = ctk.CTkOptionMenu(
             p, values=["None", "Normalize", "CLAHE", "Both"],
             variable=self._contrast_var, **_om_kw,
-        ).grid(row=1, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
+        )
+        _cont_menu.grid(row=1, column=1, columnspan=2, sticky="ew", padx=4, pady=2)
+        _ToolTip(_cont_menu,
+                 "Pre-processing applied before thresholding.\n"
+                 "None: no adjustment.\nNormalize: stretches the histogram "
+                 "to the full 0–255 range.\nCLAHE: adaptive histogram "
+                 "equalisation — improves local contrast without "
+                 "over-brightening.\nBoth: normalise then CLAHE.")
 
-        ctk.CTkLabel(p, text="Padding", font=ctk.CTkFont(size=11),
-                     text_color=_C["deep_green"]).grid(
-            row=2, column=0, sticky="w", padx=10)
+        _pad_lbl_w = ctk.CTkLabel(p, text="Padding", font=ctk.CTkFont(size=11),
+                                   text_color=_C["deep_green"])
+        _pad_lbl_w.grid(row=2, column=0, sticky="w", padx=10)
+        _ToolTip(_pad_lbl_w,
+                 "Extra pixels added on each side of every detected bounding "
+                 "box before the crop is saved. Increase if label text is "
+                 "being clipped at the edges; decrease if crops include too "
+                 "much background.")
         self._pad_var = tk.IntVar(value=30)
         self._pad_lbl = ctk.CTkLabel(p, text="30px", width=40,
                                       text_color=_C["grey"])
         self._pad_lbl.grid(row=2, column=2, padx=(0, 8))
-        ctk.CTkSlider(
+        _pad_slider = ctk.CTkSlider(
             p, from_=0, to=80, number_of_steps=16,
             variable=self._pad_var, **_sl_kw,
             command=lambda v: self._pad_lbl.configure(text=f"{int(float(v))}px"),
-        ).grid(row=2, column=1, sticky="ew", padx=4, pady=2)
+        )
+        _pad_slider.grid(row=2, column=1, sticky="ew", padx=4, pady=2)
+        _ToolTip(_pad_slider,
+                 "Extra pixels added on each side of every detected bounding "
+                 "box before the crop is saved. Increase if label text is "
+                 "being clipped at the edges; decrease if crops include too "
+                 "much background.")
 
-        ctk.CTkLabel(p, text="Min area", font=ctk.CTkFont(size=11),
-                     text_color=_C["deep_green"]).grid(
-            row=3, column=0, sticky="w", padx=10)
+        _area_lbl_w = ctk.CTkLabel(p, text="Min area", font=ctk.CTkFont(size=11),
+                                    text_color=_C["deep_green"])
+        _area_lbl_w.grid(row=3, column=0, sticky="w", padx=10)
+        _ToolTip(_area_lbl_w,
+                 "Minimum contour area as a percentage of the total image "
+                 "area. Detections smaller than this are discarded as noise. "
+                 "Increase if small debris is being picked up as packets.")
         self._min_area_var = tk.DoubleVar(value=0.05)
         self._min_area_lbl = ctk.CTkLabel(p, text="0.05%", width=46,
                                            text_color=_C["grey"])
         self._min_area_lbl.grid(row=3, column=2, padx=(0, 8))
-        ctk.CTkSlider(
+        _area_slider = ctk.CTkSlider(
             p, from_=0.01, to=2.0, number_of_steps=40,
             variable=self._min_area_var, **_sl_kw,
             command=lambda v: self._min_area_lbl.configure(text=f"{float(v):.2f}%"),
-        ).grid(row=3, column=1, sticky="ew", padx=4, pady=2)
+        )
+        _area_slider.grid(row=3, column=1, sticky="ew", padx=4, pady=2)
+        _ToolTip(_area_slider,
+                 "Minimum contour area as a percentage of the total image "
+                 "area. Detections smaller than this are discarded as noise. "
+                 "Increase if small debris is being picked up as packets.")
 
-        self._deskew_var = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
+        self._deskew_var = tk.BooleanVar(value=True)
+        _deskew_cb = ctk.CTkCheckBox(
             p, text="Deskew packets",
             variable=self._deskew_var,
             fg_color=_C["mid_green"], hover_color=_C["soft_green"],
             checkmark_color="white", text_color=_C["deep_green"],
-        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(4, 6))
+        )
+        _deskew_cb.grid(row=4, column=0, columnspan=3, sticky="w",
+                        padx=10, pady=(4, 6))
+        _ToolTip(_deskew_cb,
+                 "Correct slight rotational skew in each crop using a "
+                 "minimum-area rectangle fit. Recommended for packets that "
+                 "are placed at a small angle. Adds a little processing time.")
 
     def _build_right(self, p):
         # Preview area
@@ -1465,9 +2221,12 @@ class App(ctk.CTk):
         if not in_p or not Path(in_p).is_dir():
             messagebox.showerror("Error", "Please select a valid input folder.")
             return
+
+        # Auto-generate dated output sub-folder when field is blank
         if not out_p:
-            messagebox.showerror("Error", "Please select an output folder.")
-            return
+            auto = _auto_output_dir(Path(in_p))
+            self._output_var.set(str(auto))
+            out_p = str(auto)
 
         images = sorted(
             p for p in Path(in_p).iterdir()
@@ -1543,9 +2302,13 @@ class App(ctk.CTk):
         self._set_busy(False)
         self._open_btn.configure(state="normal")
 
-        # Store context for Fix buttons
-        self._last_out_dir = out_dir
-        self._last_settings = settings
+        # Store context for Fix / Gallery / VVGo buttons
+        self._last_out_dir     = out_dir
+        self._last_settings    = settings
+        self._last_all_results = all_results
+
+        self._gallery_btn.configure(state="normal")
+        self._vvgo_btn.configure(state="normal")
 
         total = len(all_results)
         ok = total - len(flagged)
@@ -1597,14 +2360,25 @@ class App(ctk.CTk):
                     fix_btn.grid(row=0, column=col, padx=(4, 2), pady=4)
                     col += 1
 
-                ctk.CTkButton(
+                edit_btn = ctk.CTkButton(
                     row_fr,
                     text="✏",
                     width=36,
                     fg_color=_C["deep_green"], hover_color=_C["mid_green"],
                     font=ctk.CTkFont(size=13),
-                    command=lambda p=r.path: self._open_manual_editor(p),
-                ).grid(row=0, column=col, padx=(0, 6), pady=4)
+                )
+
+                def _open_edit(r=r, btn=edit_btn):
+                    def _mark_done():
+                        self.after(0, lambda: btn.configure(
+                            text="✓", state="disabled",
+                            fg_color=_C["mid_green"],
+                            hover_color=_C["mid_green"],
+                        ))
+                    self._open_manual_editor(r.path, result=r, on_done=_mark_done)
+
+                edit_btn.configure(command=_open_edit)
+                edit_btn.grid(row=0, column=col, padx=(0, 6), pady=4)
         else:
             self._log("All images look consistent — no review needed.")
             self._review_fr.grid_remove()
@@ -1694,8 +2468,15 @@ class App(ctk.CTk):
 
     # ── Manual editor ─────────────────────────────────────────────────────────
 
-    def _open_manual_editor(self, image_path: Path):
-        """Open the ManualCropEditor dialog for the given source image."""
+    def _open_manual_editor(self, image_path: Path,
+                            result: "ImageResult | None" = None,
+                            on_done: "callable | None" = None):
+        """
+        Open ManualCropEditor for *image_path*.
+        Runs segmentation in a thread first so the editor can show a detection
+        overlay: green boxes for normal crops, red for oversized ones.
+        *on_done* is called (no args) after the user saves crops.
+        """
         out_dir = self._last_out_dir
         s = self._last_settings
         if out_dir is None or s is None:
@@ -1705,10 +2486,71 @@ class App(ctk.CTk):
                 parent=self,
             )
             return
-        try:
-            ManualCropEditor(self, image_path, out_dir, s)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc), parent=self)
+
+        def build_overlay():
+            try:
+                raw = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+                if raw is None:
+                    raise ValueError(f"Cannot open: {image_path}")
+                bgr_full = _to_bgr8(raw)
+                ih = bgr_full.shape[0]
+                top_px = int(ih * s.top_crop_frac)
+                clean = bgr_full[top_px:, :]
+
+                # Re-detect packets on the cropped source
+                try:
+                    dets, _, _ = _detect_packets(clean, s)
+                except Exception:
+                    dets = []
+
+                # Decide which detections are "oversized" relative to the batch
+                oversized_idx: set[int] = set()
+                if result is not None and result.crop_info:
+                    all_dims = [(w, h) for _, w, h in result.crop_info]
+                    if all_dims:
+                        med_w = float(np.median([d[0] for d in all_dims]))
+                        med_h = float(np.median([d[1] for d in all_dims]))
+                        for i, d in enumerate(dets):
+                            dw = d["w"] + 2 * s.padding
+                            dh = d["h"] + 2 * s.padding
+                            if (dw > _OVERSIZE_THRESHOLD * med_w or
+                                    dh > _OVERSIZE_THRESHOLD * med_h):
+                                oversized_idx.add(i)
+
+                # Draw colored overlay on a copy of the clean image
+                overlay = clean.copy()
+                for i, d in enumerate(dets):
+                    x, y, w, h = d["x"], d["y"], d["w"], d["h"]
+                    # red for oversized, green for OK
+                    colour = (0, 0, 220) if i in oversized_idx else (0, 200, 60)
+                    cv2.rectangle(overlay, (x, y), (x + w, y + h), colour, 3)
+                    cv2.putText(overlay, str(i + 1),
+                                (x + 6, y + 26),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                                colour, 2, cv2.LINE_AA)
+
+                self.after(0, lambda: ManualCropEditor(
+                    self, image_path, out_dir, s,
+                    overlay_bgr=overlay, on_save=on_done,
+                ))
+            except Exception as exc:
+                self.after(0, lambda e=str(exc): messagebox.showerror(
+                    "Error", e, parent=self))
+
+        threading.Thread(target=build_overlay, daemon=True).start()
+
+    # ── Gallery & VVGo launchers ──────────────────────────────────────────────
+
+    def _open_gallery(self):
+        if not self._last_out_dir or not self._last_settings:
+            return
+        CropGallery(self, self._last_out_dir,
+                    self._last_all_results, self._last_settings)
+
+    def _open_vvgo(self):
+        if not self._last_out_dir:
+            return
+        VVGoDialog(self, self._last_out_dir)
 
     # ── Open output ───────────────────────────────────────────────────────────
 
