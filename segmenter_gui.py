@@ -53,8 +53,38 @@ _FLAG_STYLE = {
     "oversize": ("⚠  Possible merged packets", _C["grey"], _C["deep_green"]),
 }
 
-VVGO_SERVER_URL   = "https://vouchervision-go-738307415303.us-central1.run.app/"
+VVGO_SERVER_URL    = "https://vouchervision-go-738307415303.us-central1.run.app/"
 VVGO_DEFAULT_PROMPT = "SLTPvM_default.yaml"
+
+VVGO_MODELS = [
+    "gemini-3.1-flash-lite-preview",   # fast, unlimited — default
+    "gemini-3-flash-preview",           # fast, good quality
+    "gemini-3.1-pro-preview",           # highest quality, rate-limited
+]
+
+VVGO_MODEL_TIPS = {
+    "gemini-3.1-flash-lite-preview": "Fast · Unlimited usage · Recommended for large batches",
+    "gemini-3-flash-preview":         "Fast · Good quality",
+    "gemini-3.1-pro-preview":         "Highest quality · Rate-limited — use for spot-checks",
+}
+
+_APP_CFG_PATH = Path.home() / ".cryptogam_config.json"
+
+
+def _cfg_load() -> dict:
+    try:
+        return json.loads(_APP_CFG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _cfg_save(updates: dict):
+    cfg = _cfg_load()
+    cfg.update(updates)
+    try:
+        _APP_CFG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 # ─── Settings ─────────────────────────────────────────────────────────────────
@@ -604,7 +634,8 @@ class ManualCropEditor(ctk.CTkToplevel):
     def __init__(self, master, image_path: Path,
                  output_dir: Path, s: SegSettings,
                  overlay_bgr: np.ndarray | None = None,
-                 on_save: "callable | None" = None):
+                 on_save: "callable | None" = None,
+                 highlight_box: "tuple[int,int,int,int] | None" = None):
         super().__init__(master)
         self.title(f"Manual crop editor — {image_path.name}")
         self.geometry("980x680")
@@ -614,7 +645,8 @@ class ManualCropEditor(ctk.CTkToplevel):
         self._image_path = image_path
         self._output_dir = output_dir
         self._s = s
-        self._on_save = on_save  # called with no args after a successful save
+        self._on_save      = on_save       # called after successful save
+        self._highlight_box = highlight_box  # (x1,y1,x2,y2) image coords to mark
 
         # Load source image and apply top-crop
         raw = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
@@ -866,6 +898,32 @@ class ManualCropEditor(ctk.CTkToplevel):
                 font=("Arial", 10, "bold"),
             )
 
+        # Highlight box (from gallery "Redraw" — points the user to the crop)
+        if self._highlight_box:
+            hx1, hy1, hx2, hy2 = self._highlight_box
+            cbx1, cby1 = self._img_to_canvas(hx1, hy1)
+            cbx2, cby2 = self._img_to_canvas(hx2, hy2)
+            # Outer glow
+            self._canvas.create_rectangle(
+                cbx1 - 2, cby1 - 2, cbx2 + 2, cby2 + 2,
+                outline="#00E5FF", width=4, dash=(10, 4),
+            )
+            # Label
+            lx = min(cbx1, cbx2) + 4
+            ly = min(cby1, cby2) - 18
+            self._canvas.create_text(
+                lx + 1, ly + 1,
+                text="← redraw this crop",
+                anchor="w", fill="#000000",
+                font=("Arial", 10, "bold"),
+            )
+            self._canvas.create_text(
+                lx, ly,
+                text="← redraw this crop",
+                anchor="w", fill="#00E5FF",
+                font=("Arial", 10, "bold"),
+            )
+
     # ── Zoom / pan ────────────────────────────────────────────────────────────
 
     def _on_scroll(self, event):
@@ -1027,19 +1085,20 @@ class ManualCropEditor(ctk.CTkToplevel):
 class VVGoDialog(ctk.CTkToplevel):
     """
     Submit all crop images in the output folder to the VoucherVision Go API.
-    Default LLM model, label collage skipped, WFO validation skipped.
-    JSON results are saved alongside the crops (or in a user-chosen sub-folder).
+    Token, model, and prompt are persisted to ~/.cryptogam_config.json.
     """
 
     def __init__(self, master, output_dir: Path):
         super().__init__(master)
         self.title("Submit to VoucherVision Go")
-        self.geometry("560x530")
-        self.resizable(False, False)
+        self.geometry("600x700")
+        self.minsize(520, 580)
         self.grab_set()
 
-        self._output_dir = output_dir
-        self._cancel_event = threading.Event()
+        self._output_dir    = output_dir
+        self._cancel_event  = threading.Event()
+        self._known_prompts = [VVGO_DEFAULT_PROMPT]
+        self._adv_open      = False
 
         self.configure(fg_color=_C["warm_white"])
         self._build_ui()
@@ -1047,8 +1106,11 @@ class VVGoDialog(ctk.CTkToplevel):
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        cfg = _cfg_load()
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(12, weight=1)   # log box expands
 
+        # ── Header ────────────────────────────────────────────────────────────
         ctk.CTkLabel(
             self, text="VoucherVision Go",
             font=ctk.CTkFont(size=14, weight="bold"),
@@ -1058,56 +1120,135 @@ class VVGoDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             self,
             text="Submit segmented packets for automated text extraction.\n"
-                 "Results are saved as JSON files for import into VVGo Editor.",
+                 "Full JSON results are saved for import into VVGo Editor.",
             font=ctk.CTkFont(size=11), text_color=_C["grey"], justify="left",
-        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 10))
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 8))
 
         ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
             row=2, column=0, sticky="ew", padx=14)
 
-        # API token row
+        # ── API token ─────────────────────────────────────────────────────────
         ctk.CTkLabel(self, text="API Token",
+                     font=ctk.CTkFont(weight="bold"),
                      text_color=_C["deep_green"]).grid(
-            row=3, column=0, sticky="w", padx=20, pady=(12, 2))
+            row=3, column=0, sticky="w", padx=20, pady=(10, 2))
 
         tok_fr = ctk.CTkFrame(self, fg_color="transparent")
-        tok_fr.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
+        tok_fr.grid(row=4, column=0, sticky="ew", padx=16, pady=(0, 2))
         tok_fr.grid_columnconfigure(0, weight=1)
 
-        self._token_var = tk.StringVar()
+        saved_token = cfg.get("vvgo_token", "")
+        self._token_var = tk.StringVar(value=saved_token)
         self._token_entry = ctk.CTkEntry(
             tok_fr, textvariable=self._token_var, show="•",
             fg_color=_C["warm_white"], border_color=_C["rule"],
             text_color=_C["deep_green"],
-            placeholder_text="Paste your VVGo auth token here…",
+            placeholder_text="Paste your VVGo auth token…",
         )
-        self._token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._token_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         self._show_tok = tk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            tok_fr, text="Show", variable=self._show_tok,
-            fg_color=_C["mid_green"], hover_color=_C["soft_green"],
-            checkmark_color="white", text_color=_C["grey"], width=16,
-            command=lambda: self._token_entry.configure(
-                show="" if self._show_tok.get() else "•"),
+        ctk.CTkButton(
+            tok_fr, text="Show", width=52,
+            fg_color=_C["cream"], hover_color=_C["soft_green"],
+            text_color=_C["deep_green"], border_color=_C["rule"], border_width=1,
+            font=ctk.CTkFont(size=11),
+            command=self._toggle_token_vis,
+        ).grid(row=0, column=1, padx=(0, 4))
+
+        ctk.CTkButton(
+            tok_fr, text="Save", width=52,
+            fg_color=_C["mid_green"], hover_color=_C["deep_green"],
+            font=ctk.CTkFont(size=11),
+            command=self._save_token,
+        ).grid(row=0, column=2)
+
+        self._tok_status = ctk.CTkLabel(
+            self,
+            text="✓  Token loaded from saved config" if saved_token else "",
+            font=ctk.CTkFont(size=10), text_color=_C["mid_green"],
+        )
+        self._tok_status.grid(row=5, column=0, sticky="w", padx=20, pady=(0, 6))
+
+        # ── Model ─────────────────────────────────────────────────────────────
+        ctk.CTkLabel(self, text="Model",
+                     font=ctk.CTkFont(weight="bold"),
+                     text_color=_C["deep_green"]).grid(
+            row=6, column=0, sticky="w", padx=20, pady=(4, 2))
+
+        saved_model = cfg.get("vvgo_model", VVGO_MODELS[0])
+        if saved_model not in VVGO_MODELS:
+            saved_model = VVGO_MODELS[0]
+        self._model_var = tk.StringVar(value=saved_model)
+        _model_menu = ctk.CTkOptionMenu(
+            self, values=VVGO_MODELS,
+            variable=self._model_var,
+            fg_color=_C["cream"], button_color=_C["mid_green"],
+            button_hover_color=_C["deep_green"], text_color=_C["deep_green"],
+            dropdown_fg_color=_C["warm_white"],
+            dropdown_hover_color=_C["soft_green"],
+            dropdown_text_color=_C["deep_green"],
+            command=lambda v: _cfg_save({"vvgo_model": v}),
+        )
+        _model_menu.grid(row=7, column=0, sticky="ew", padx=16, pady=(0, 4))
+        _ToolTip(_model_menu,
+                 "\n".join(f"{m}:\n  {VVGO_MODEL_TIPS[m]}"
+                           for m in VVGO_MODELS))
+
+        # ── Prompt ────────────────────────────────────────────────────────────
+        ctk.CTkLabel(self, text="Prompt",
+                     font=ctk.CTkFont(weight="bold"),
+                     text_color=_C["deep_green"]).grid(
+            row=8, column=0, sticky="w", padx=20, pady=(4, 2))
+
+        pr_fr = ctk.CTkFrame(self, fg_color="transparent")
+        pr_fr.grid(row=9, column=0, sticky="ew", padx=16, pady=(0, 4))
+        pr_fr.grid_columnconfigure(0, weight=1)
+
+        saved_prompt = cfg.get("vvgo_prompt", VVGO_DEFAULT_PROMPT)
+        self._prompt_var = tk.StringVar(value=saved_prompt)
+        self._prompt_menu = ctk.CTkOptionMenu(
+            pr_fr, values=self._known_prompts,
+            variable=self._prompt_var,
+            fg_color=_C["cream"], button_color=_C["mid_green"],
+            button_hover_color=_C["deep_green"], text_color=_C["deep_green"],
+            dropdown_fg_color=_C["warm_white"],
+            dropdown_hover_color=_C["soft_green"],
+            dropdown_text_color=_C["deep_green"],
+            command=lambda v: _cfg_save({"vvgo_prompt": v}),
+        )
+        self._prompt_menu.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        _ToolTip(self._prompt_menu,
+                 "The YAML prompt template used for structured label parsing.\n"
+                 "SLTPvM_default.yaml is the general-purpose herbarium prompt.\n"
+                 "Click 'Fetch' to load the full list from the server.")
+
+        ctk.CTkButton(
+            pr_fr, text="Fetch", width=56,
+            fg_color=_C["cream"], hover_color=_C["soft_green"],
+            text_color=_C["deep_green"], border_color=_C["rule"], border_width=1,
+            font=ctk.CTkFont(size=11),
+            command=self._fetch_prompts,
         ).grid(row=0, column=1)
 
-        # JSON output folder
+        # ── JSON output folder ────────────────────────────────────────────────
         ctk.CTkLabel(self, text="JSON output folder",
+                     font=ctk.CTkFont(weight="bold"),
                      text_color=_C["deep_green"]).grid(
-            row=5, column=0, sticky="w", padx=20, pady=(4, 2))
+            row=10, column=0, sticky="w", padx=20, pady=(4, 2))
 
         json_fr = ctk.CTkFrame(self, fg_color="transparent")
-        json_fr.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 10))
+        json_fr.grid(row=11, column=0, sticky="ew", padx=16, pady=(0, 6))
         json_fr.grid_columnconfigure(0, weight=1)
 
-        self._json_dir_var = tk.StringVar(
-            value=str(self._output_dir / "vvgo_json"))
+        saved_json_dir = cfg.get(
+            "vvgo_json_dir", str(self._output_dir / "vvgo_json"))
+        self._json_dir_var = tk.StringVar(value=saved_json_dir)
         ctk.CTkEntry(
             json_fr, textvariable=self._json_dir_var,
             fg_color=_C["warm_white"], border_color=_C["rule"],
             text_color=_C["deep_green"],
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ctk.CTkButton(
             json_fr, text="Browse", width=70,
             fg_color=_C["cream"], hover_color=_C["soft_green"],
@@ -1115,54 +1256,54 @@ class VVGoDialog(ctk.CTkToplevel):
             command=self._browse_json,
         ).grid(row=0, column=1)
 
+        # ── Advanced toggle ───────────────────────────────────────────────────
         ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
-            row=7, column=0, sticky="ew", padx=14, pady=6)
+            row=12, column=0, sticky="ew", padx=14, pady=(4, 0))
 
-        # Parallel workers
-        wrk_fr = ctk.CTkFrame(self, fg_color="transparent")
-        wrk_fr.grid(row=8, column=0, sticky="ew", padx=20, pady=(0, 6))
-        wrk_fr.grid_columnconfigure(1, weight=1)
+        self._adv_btn = ctk.CTkButton(
+            self, text="▸ Advanced settings",
+            fg_color="transparent", text_color=_C["grey"],
+            hover_color=_C["rule"], anchor="w",
+            font=ctk.CTkFont(size=11),
+            command=self._toggle_advanced,
+        )
+        self._adv_btn.grid(row=13, column=0, sticky="w", padx=8, pady=(2, 0))
 
-        ctk.CTkLabel(wrk_fr, text="Parallel workers",
-                     text_color=_C["deep_green"]).grid(
-            row=0, column=0, sticky="w")
-        self._workers_var = tk.IntVar(value=4)
-        self._workers_lbl = ctk.CTkLabel(wrk_fr, text="4", width=26,
-                                          text_color=_C["grey"])
-        self._workers_lbl.grid(row=0, column=2)
-        ctk.CTkSlider(
-            wrk_fr, from_=1, to=16, number_of_steps=15,
-            variable=self._workers_var,
-            button_color=_C["mid_green"], button_hover_color=_C["deep_green"],
-            progress_color=_C["mid_green"],
-            command=lambda v: self._workers_lbl.configure(text=str(int(float(v)))),
-        ).grid(row=0, column=1, sticky="ew", padx=8)
+        # Advanced panel (hidden by default)
+        self._adv_fr = ctk.CTkFrame(
+            self, fg_color=_C["soft_green"],
+            border_color=_C["rule"], border_width=1,
+        )
+        self._adv_fr.grid(row=14, column=0, sticky="ew", padx=16, pady=(0, 4))
+        self._adv_fr.grid_columnconfigure(1, weight=1)
+        self._adv_fr.grid_remove()
+        self._build_advanced_panel(self._adv_fr)
 
+        # ── Progress & log ────────────────────────────────────────────────────
         ctk.CTkFrame(self, height=1, fg_color=_C["rule"]).grid(
-            row=9, column=0, sticky="ew", padx=14, pady=4)
+            row=15, column=0, sticky="ew", padx=14, pady=4)
 
-        # Progress
         self._prog_bar = ctk.CTkProgressBar(
             self, fg_color=_C["soft_green"], progress_color=_C["mid_green"])
         self._prog_bar.set(0)
-        self._prog_bar.grid(row=10, column=0, sticky="ew", padx=20, pady=(4, 0))
+        self._prog_bar.grid(row=16, column=0, sticky="ew", padx=20, pady=(4, 0))
 
         self._prog_lbl = ctk.CTkLabel(
             self, text="", font=ctk.CTkFont(size=11), text_color=_C["grey"])
-        self._prog_lbl.grid(row=11, column=0, sticky="w", padx=20, pady=(2, 0))
+        self._prog_lbl.grid(row=17, column=0, sticky="w", padx=20, pady=(2, 0))
 
         self._log_box = ctk.CTkTextbox(
-            self, height=80,
+            self, height=90,
             font=ctk.CTkFont(size=10, family="Courier New"),
             fg_color=_C["warm_white"], text_color=_C["deep_green"],
             border_color=_C["rule"], border_width=1,
         )
-        self._log_box.grid(row=12, column=0, sticky="ew", padx=16, pady=6)
+        self._log_box.grid(row=18, column=0, sticky="nsew", padx=16, pady=4)
         self._log_box.configure(state="disabled")
 
-        # Action buttons
+        # ── Buttons ───────────────────────────────────────────────────────────
         btn_fr = ctk.CTkFrame(self, fg_color="transparent")
-        btn_fr.grid(row=13, column=0, sticky="ew", padx=16, pady=(0, 16))
+        btn_fr.grid(row=19, column=0, sticky="ew", padx=16, pady=(0, 16))
         btn_fr.grid_columnconfigure(0, weight=1)
         btn_fr.grid_columnconfigure(1, weight=1)
 
@@ -1181,13 +1322,176 @@ class VVGoDialog(ctk.CTkToplevel):
             command=self.destroy,
         ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
+    def _build_advanced_panel(self, p):
+        _sl_kw = dict(
+            button_color=_C["mid_green"], button_hover_color=_C["deep_green"],
+            progress_color=_C["mid_green"],
+        )
+
+        # OCR engine
+        _ocr_lbl = ctk.CTkLabel(p, text="OCR engine",
+                                 font=ctk.CTkFont(size=11),
+                                 text_color=_C["deep_green"])
+        _ocr_lbl.grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        _ToolTip(_ocr_lbl,
+                 "Model used for the initial OCR pass.\n"
+                 "'Same as LLM' uses the same model for both OCR and JSON "
+                 "parsing (recommended). Set separately only for fine-tuning.")
+        ocr_models = ["Same as LLM"] + VVGO_MODELS
+        self._ocr_var = tk.StringVar(
+            value=_cfg_load().get("vvgo_ocr", "Same as LLM"))
+        _ocr_menu = ctk.CTkOptionMenu(
+            p, values=ocr_models, variable=self._ocr_var,
+            fg_color=_C["cream"], button_color=_C["mid_green"],
+            button_hover_color=_C["deep_green"], text_color=_C["deep_green"],
+            dropdown_fg_color=_C["warm_white"],
+            dropdown_hover_color=_C["soft_green"],
+            dropdown_text_color=_C["deep_green"],
+        )
+        _ocr_menu.grid(row=0, column=1, sticky="ew", padx=(4, 10), pady=(8, 2))
+
+        # WFO validation
+        self._wfo_var = tk.BooleanVar(
+            value=_cfg_load().get("vvgo_wfo", False))
+        _wfo_cb = ctk.CTkCheckBox(
+            p, text="World Flora Online taxonomic validation",
+            variable=self._wfo_var,
+            fg_color=_C["mid_green"], hover_color=_C["soft_green"],
+            checkmark_color="white", text_color=_C["deep_green"],
+            font=ctk.CTkFont(size=11),
+        )
+        _wfo_cb.grid(row=1, column=0, columnspan=2, sticky="w",
+                     padx=10, pady=(4, 2))
+        _ToolTip(_wfo_cb,
+                 "Check parsed scientific names against the World Flora Online "
+                 "database. Adds processing time and requires an internet "
+                 "connection to the WFO API.")
+
+        # COP90 elevation
+        self._cop_var = tk.BooleanVar(
+            value=_cfg_load().get("vvgo_cop90", False))
+        _cop_cb = ctk.CTkCheckBox(
+            p, text="Add COP90 elevation data from coordinates",
+            variable=self._cop_var,
+            fg_color=_C["mid_green"], hover_color=_C["soft_green"],
+            checkmark_color="white", text_color=_C["deep_green"],
+            font=ctk.CTkFont(size=11),
+        )
+        _cop_cb.grid(row=2, column=0, columnspan=2, sticky="w",
+                     padx=10, pady=(0, 2))
+        _ToolTip(_cop_cb,
+                 "Derive elevation (m) from parsed decimal lat/lon using the "
+                 "Copernicus GLO-90 DEM. Only useful when the label contains "
+                 "coordinates.")
+
+        # OCR only
+        self._ocr_only_var = tk.BooleanVar(
+            value=_cfg_load().get("vvgo_ocr_only", False))
+        _ocr_only_cb = ctk.CTkCheckBox(
+            p, text="OCR only  (skip JSON parsing)",
+            variable=self._ocr_only_var,
+            fg_color=_C["mid_green"], hover_color=_C["soft_green"],
+            checkmark_color="white", text_color=_C["deep_green"],
+            font=ctk.CTkFont(size=11),
+        )
+        _ocr_only_cb.grid(row=3, column=0, columnspan=2, sticky="w",
+                          padx=10, pady=(0, 2))
+        _ToolTip(_ocr_only_cb,
+                 "Return raw OCR text only. The LLM JSON-parsing step is "
+                 "skipped. Useful for a quick read of label contents without "
+                 "needing structured output.")
+
+        # Parallel workers
+        _wlbl = ctk.CTkLabel(p, text="Parallel workers",
+                              font=ctk.CTkFont(size=11),
+                              text_color=_C["deep_green"])
+        _wlbl.grid(row=4, column=0, sticky="w", padx=10, pady=(4, 8))
+        _ToolTip(_wlbl,
+                 "Number of images submitted concurrently. Higher values are "
+                 "faster but may hit API rate limits on the Pro model.")
+        self._workers_var = tk.IntVar(
+            value=_cfg_load().get("vvgo_workers", 4))
+        self._workers_lbl = ctk.CTkLabel(
+            p, text=str(self._workers_var.get()), width=26,
+            text_color=_C["grey"])
+        self._workers_lbl.grid(row=4, column=1, sticky="e",
+                                padx=(0, 10), pady=(4, 8))
+        ctk.CTkSlider(
+            p, from_=1, to=16, number_of_steps=15,
+            variable=self._workers_var, **_sl_kw,
+            command=lambda v: self._workers_lbl.configure(
+                text=str(int(float(v)))),
+        ).grid(row=4, column=1, sticky="ew", padx=(4, 44), pady=(4, 8))
+
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _toggle_token_vis(self):
+        self._show_tok.set(not self._show_tok.get())
+        self._token_entry.configure(
+            show="" if self._show_tok.get() else "•")
+
+    def _save_token(self):
+        token = self._token_var.get().strip()
+        if token:
+            _cfg_save({"vvgo_token": token})
+            self._tok_status.configure(text="✓  Token saved")
+
+    def _toggle_advanced(self):
+        self._adv_open = not self._adv_open
+        if self._adv_open:
+            self._adv_fr.grid()
+            self._adv_btn.configure(text="▾ Advanced settings")
+        else:
+            self._adv_fr.grid_remove()
+            self._adv_btn.configure(text="▸ Advanced settings")
 
     def _browse_json(self):
         d = filedialog.askdirectory(
             title="Select folder for JSON outputs", parent=self)
         if d:
             self._json_dir_var.set(d)
+            _cfg_save({"vvgo_json_dir": d})
+
+    def _fetch_prompts(self):
+        token = self._token_var.get().strip()
+        if not token:
+            messagebox.showerror(
+                "Token required",
+                "Enter your API token first to fetch the prompt list.",
+                parent=self)
+            return
+
+        def _do_fetch():
+            try:
+                resp = requests.get(
+                    f"{VVGO_SERVER_URL}prompts",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=20,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                # Response may be a list of names or a dict with "prompts" key
+                if isinstance(data, list):
+                    names = [str(p) for p in data if p]
+                elif isinstance(data, dict):
+                    names = [str(p) for p in
+                             data.get("prompts", data.get("names", [])) if p]
+                else:
+                    names = []
+                if not names:
+                    names = [VVGO_DEFAULT_PROMPT]
+
+                def _apply(n=names):
+                    self._known_prompts = n
+                    self._prompt_menu.configure(values=n)
+                    if self._prompt_var.get() not in n:
+                        self._prompt_var.set(n[0])
+                self.after(0, _apply)
+            except Exception as exc:
+                self.after(0, lambda e=str(exc): messagebox.showerror(
+                    "Fetch failed", f"Could not load prompts:\n{e}", parent=self))
+
+        threading.Thread(target=_do_fetch, daemon=True).start()
 
     def _vlog(self, msg: str):
         self._log_box.configure(state="normal")
@@ -1204,7 +1508,7 @@ class VVGoDialog(ctk.CTkToplevel):
                 "Token required",
                 "Please enter your VoucherVision Go API token.\n\n"
                 "Tokens are available at:\n"
-                "https://vouchervision-go-738307415303.us-central1.run.app/login",
+                f"{VVGO_SERVER_URL}login",
                 parent=self,
             )
             return
@@ -1221,12 +1525,39 @@ class VVGoDialog(ctk.CTkToplevel):
             return
 
         json_dir.mkdir(parents=True, exist_ok=True)
+        model       = self._model_var.get()
+        prompt      = self._prompt_var.get()
         max_workers = self._workers_var.get()
+        ocr_engine  = self._ocr_var.get() if self._adv_open else "Same as LLM"
+        include_wfo = self._wfo_var.get() if self._adv_open else False
+        include_cop = self._cop_var.get() if self._adv_open else False
+        ocr_only    = self._ocr_only_var.get() if self._adv_open else False
+
         total = len(images)
         self._submit_btn.configure(state="disabled", text="Submitting…")
         self._cancel_event.clear()
         self._prog_bar.set(0)
-        self._vlog(f"Submitting {total} image(s)…")
+        self._vlog(
+            f"Submitting {total} image(s)  ·  model={model}  ·  prompt={prompt}")
+
+        def _build_data() -> dict:
+            d: dict = {
+                "prompt": prompt,
+                "skip_label_collage": "true",
+            }
+            if model != VVGO_MODELS[0]:        # non-default model
+                d["llm_model"] = model
+            if ocr_engine != "Same as LLM":
+                d["engines"] = json.dumps([ocr_engine])
+            if include_wfo:
+                d["include_wfo"] = "true"
+            if include_cop:
+                d["include_cop90"] = "true"
+            if ocr_only:
+                d["ocr_only"] = "true"
+            return d
+
+        post_data = _build_data()
 
         def _process_one(img_path: Path) -> dict:
             if self._cancel_event.is_set():
@@ -1237,11 +1568,7 @@ class VVGoDialog(ctk.CTkToplevel):
                         f"{VVGO_SERVER_URL}process",
                         headers={"Authorization": f"Bearer {token}"},
                         files={"file": (img_path.name, fh, "image/jpeg")},
-                        data={
-                            "prompt": VVGO_DEFAULT_PROMPT,
-                            "skip_label_collage": "true",
-                            # include_wfo omitted → server default = false
-                        },
+                        data=post_data,
                         timeout=180,
                     )
                 resp.raise_for_status()
@@ -1269,7 +1596,8 @@ class VVGoDialog(ctk.CTkToplevel):
                         msg = f"  ✓  {res['name']}"
                     else:
                         error_count += 1
-                        msg = f"  ✗  {res['name']}  — {res['error']}"
+                        msg = (f"  ✗  {res['name']}  — {res['error']}"
+                               if res["error"] else f"  ✗  {res['name']}")
                     prog = done_count / total
 
                     def _upd(m=msg, p=prog, d=done_count):
@@ -1339,12 +1667,18 @@ class CropGallery(ctk.CTkToplevel):
 
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0)
         self.grid_rowconfigure(0, weight=1)
 
+        # Resizable split: left = thumbnail grid, right = detail panel (1/3)
+        self._pane = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL,
+            sashrelief=tk.FLAT, sashwidth=5,
+            bg=_C["rule"], relief=tk.FLAT, bd=0,
+        )
+        self._pane.grid(row=0, column=0, sticky="nsew")
+
         # ── Left: scrollable thumbnail grid ──────────────────────────────────
-        left = ctk.CTkFrame(self, corner_radius=0, fg_color=_C["cream"])
-        left.grid(row=0, column=0, sticky="nsew")
+        left = ctk.CTkFrame(self._pane, corner_radius=0, fg_color=_C["cream"])
         left.grid_columnconfigure(0, weight=1)
         left.grid_rowconfigure(1, weight=1)
 
@@ -1381,10 +1715,7 @@ class CropGallery(ctk.CTkToplevel):
             self._scroll.grid_columnconfigure(c, weight=1)
 
         # ── Right: detail panel ───────────────────────────────────────────────
-        right = ctk.CTkFrame(self, width=290, corner_radius=0,
-                              fg_color=_C["cream"])
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_propagate(False)
+        right = ctk.CTkFrame(self._pane, corner_radius=0, fg_color=_C["cream"])
         right.grid_columnconfigure(0, weight=1)
         right.grid_rowconfigure(2, weight=1)
 
@@ -1396,16 +1727,18 @@ class CropGallery(ctk.CTkToplevel):
 
         self._sel_lbl = ctk.CTkLabel(
             right, text="Click a thumbnail",
-            font=ctk.CTkFont(size=10), text_color=_C["grey"], wraplength=260,
+            font=ctk.CTkFont(size=10), text_color=_C["grey"], wraplength=300,
         )
         self._sel_lbl.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 4))
 
+        # Preview canvas — expands to fill the right pane
         self._prev_canvas = tk.Canvas(
             right, bg=_C["deep_green"], highlightthickness=0,
-            width=268, height=230,
         )
         self._prev_canvas.grid(row=2, column=0, sticky="nsew", padx=10, pady=4)
+        self._prev_canvas.bind("<Configure>", self._on_preview_resize)
         self._prev_photo = None
+        self._prev_bgr   = None  # cached for resize redraws
 
         ctk.CTkFrame(right, height=1, fg_color=_C["rule"]).grid(
             row=3, column=0, sticky="ew", padx=8, pady=6)
@@ -1444,6 +1777,40 @@ class CropGallery(ctk.CTkToplevel):
             text_color=_C["grey"], border_color=_C["rule"], border_width=1,
             font=ctk.CTkFont(size=11), command=self.destroy,
         ).grid(row=8, column=0, sticky="ew", padx=12, pady=(0, 16))
+
+        # Add panes: gallery stretches, detail panel is 1/3 of window
+        self._pane.add(left,  minsize=380, stretch="always")
+        self._pane.add(right, minsize=260, stretch="never")
+        # Place sash at 2/3 after window is drawn
+        self.after(200, self._set_initial_sash)
+
+    def _set_initial_sash(self):
+        """Position the sash so the detail panel occupies ~1/3 of the window."""
+        total = self.winfo_width()
+        if total > 10:
+            self._pane.sash_place(0, int(total * 2 / 3), 0)
+
+    def _on_preview_resize(self, _event=None):
+        """Redraw the enlarged preview when the canvas is resized."""
+        if self._prev_bgr is not None:
+            self._draw_preview(self._prev_bgr)
+
+    def _draw_preview(self, bgr: np.ndarray):
+        """Fit *bgr* into the preview canvas and display it."""
+        self._prev_bgr = bgr
+        cw = max(self._prev_canvas.winfo_width(),  1)
+        ch = max(self._prev_canvas.winfo_height(), 1)
+        h, w = bgr.shape[:2]
+        scale = min(cw / w, ch / h)
+        nw = max(1, int(w * scale))
+        nh = max(1, int(h * scale))
+        rgb   = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        pil   = Image.fromarray(rgb).resize((nw, nh), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(pil)
+        self._prev_canvas.delete("all")
+        self._prev_photo = photo
+        self._prev_canvas.create_image(cw // 2, ch // 2,
+                                        anchor="center", image=photo)
 
     # ── Grid population ───────────────────────────────────────────────────────
 
@@ -1529,24 +1896,11 @@ class CropGallery(ctk.CTkToplevel):
                 text="🚩  Flag for recapture", fg_color=_C["err"],
                 hover_color=_C["err_hover"])
 
-        # Enlarged preview
+        # Enlarged preview (redraws on panel resize via _on_preview_resize)
         try:
             raw = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
             if raw is not None:
-                bgr = _to_bgr8(raw)
-                cw = self._prev_canvas.winfo_width() or 268
-                ch = self._prev_canvas.winfo_height() or 230
-                h, w = bgr.shape[:2]
-                scale = min(cw / w, ch / h)
-                nw = max(1, int(w * scale))
-                nh = max(1, int(h * scale))
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                pil = Image.fromarray(rgb).resize((nw, nh), Image.LANCZOS)
-                photo = ImageTk.PhotoImage(pil)
-                self._prev_canvas.delete("all")
-                self._prev_photo = photo
-                self._prev_canvas.create_image(
-                    cw // 2, ch // 2, anchor="center", image=photo)
+                self._draw_preview(_to_bgr8(raw))
         except Exception:
             pass
 
@@ -1583,7 +1937,9 @@ class CropGallery(ctk.CTkToplevel):
             )
             return
         if hasattr(self._app, "_open_manual_editor"):
-            self._app._open_manual_editor(result.path, result=result)
+            # Pass crop_hint so the editor highlights the relevant detection box
+            self._app._open_manual_editor(
+                result.path, result=result, crop_hint=self._selected)
 
     def _apply_filter(self, mode: str):
         for w in self._scroll.winfo_children():
@@ -2470,7 +2826,8 @@ class App(ctk.CTk):
 
     def _open_manual_editor(self, image_path: Path,
                             result: "ImageResult | None" = None,
-                            on_done: "callable | None" = None):
+                            on_done: "callable | None" = None,
+                            crop_hint: "Path | None" = None):
         """
         Open ManualCropEditor for *image_path*.
         Runs segmentation in a thread first so the editor can show a detection
@@ -2529,9 +2886,25 @@ class App(ctk.CTk):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                                 colour, 2, cv2.LINE_AA)
 
-                self.after(0, lambda: ManualCropEditor(
+                # If a crop file was hinted (from the gallery), try to find
+                # which detection it corresponds to and highlight it.
+                import re as _re
+                highlight_box = None
+                if crop_hint is not None:
+                    m = _re.search(r'_packet_(\d+)', crop_hint.stem)
+                    if m:
+                        idx = int(m.group(1)) - 1   # 0-based
+                        if 0 <= idx < len(dets):
+                            d = dets[idx]
+                            highlight_box = (
+                                d["x"], d["y"],
+                                d["x"] + d["w"], d["y"] + d["h"],
+                            )
+
+                self.after(0, lambda hb=highlight_box: ManualCropEditor(
                     self, image_path, out_dir, s,
                     overlay_bgr=overlay, on_save=on_done,
+                    highlight_box=hb,
                 ))
             except Exception as exc:
                 self.after(0, lambda e=str(exc): messagebox.showerror(
