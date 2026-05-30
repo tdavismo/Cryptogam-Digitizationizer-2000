@@ -47,7 +47,7 @@ from segmenter_core import (
     IMAGE_EXTS, MANIFEST_FIELDS,
     SegSettings, ImageResult,
     segment_image, save_crops, save_crops_detailed, flag_results,
-    resegment_or_bisect, _auto_output_dir,
+    resegment_or_bisect, _auto_output_dir, _padded_crop, _to_bgr8,
 )
 
 # Correct MIME types regardless of the host's Windows registry, which can
@@ -379,6 +379,150 @@ async def pick_folder(title: str = Query("Choose folder", description="Dialog ti
     except Exception as exc:
         raise HTTPException(500, f"Folder picker failed: {exc}")
     return {"path": chosen}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints 8 & 9 — Redraw Boundary support
+# ---------------------------------------------------------------------------
+#
+# /api/manifest  reads packet_manifest.csv and returns the per-crop detection
+#                box (in full-source-image pixel coords — bbox_y is already
+#                offset past the top_crop strip) plus the source image path
+#                and dimensions, so the editor can render the source and the
+#                box overlaid in the correct location.
+#
+# /api/redraw    crops a region of a source image with optional padding and
+#                writes the result to an output path (typically overwriting an
+#                existing crop produced by the batch run).
+
+@app.get("/api/manifest",
+         summary="Read packet_manifest.csv as a crop_path → box map",
+         tags=["Redraw"])
+async def get_manifest(output_dir: str = Query(..., description="Batch output folder")):
+    """
+    Returns:
+      {
+        "output_dir": "...",
+        "count": N,
+        "crops": {
+          "<absolute crop path>": {
+            "source_path": "...",
+            "source_w": int, "source_h": int,
+            "x": int, "y": int, "w": int, "h": int,    # bbox in full-source coords
+            "padding": int | null,                      # recovered when deskewed=False
+            "deskewed": bool, "packet_index": int
+          }, ...
+        }
+      }
+    """
+    d = Path(output_dir)
+    mf = d / "packet_manifest.csv"
+    if not mf.is_file():
+        raise HTTPException(404, f"Manifest not found: {mf}")
+
+    def _read():
+        out: dict = {}
+        with mf.open("r", encoding="utf-8", newline="") as fh:
+            for row in csv.DictReader(fh):
+                src = Path(row["source_image"])
+                crop = row["output_crop"]
+                try:
+                    bx, by, bw, bh = (int(row["bbox_x"]), int(row["bbox_y"]),
+                                      int(row["bbox_w"]), int(row["bbox_h"]))
+                except Exception:
+                    continue
+                deskewed = str(row.get("deskewed", "")).strip().lower() in ("true", "1", "yes")
+                padding = None
+                try:
+                    if not deskewed and row.get("crop_x1") not in (None, ""):
+                        padding = max(0, bx - int(row["crop_x1"]))
+                except Exception:
+                    pass
+                # Source dimensions — cached per file to avoid re-reading
+                if src not in _MANIFEST_DIM_CACHE:
+                    try:
+                        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
+                        if img is not None:
+                            _MANIFEST_DIM_CACHE[src] = (img.shape[1], img.shape[0])
+                        else:
+                            _MANIFEST_DIM_CACHE[src] = (0, 0)
+                    except Exception:
+                        _MANIFEST_DIM_CACHE[src] = (0, 0)
+                sw, sh = _MANIFEST_DIM_CACHE[src]
+                out[crop] = {
+                    "source_path": str(src),
+                    "source_w": sw, "source_h": sh,
+                    "x": bx, "y": by, "w": bw, "h": bh,
+                    "padding": padding, "deskewed": deskewed,
+                    "packet_index": int(row.get("packet_index") or 0),
+                }
+        return out
+
+    try:
+        crops = await asyncio.to_thread(_read)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not read manifest: {exc}")
+    return {"output_dir": str(d), "count": len(crops), "crops": crops}
+
+
+# Module-level cache keyed by source path — avoids reading the same multi-MB
+# image off disk for every row when a batch has dozens of crops per source.
+_MANIFEST_DIM_CACHE: dict = {}
+
+
+class RedrawRequest(BaseModel):
+    source_path: str
+    output_path: str
+    x: int
+    y: int
+    w: int
+    h: int
+    padding: int = 0
+
+
+@app.post("/api/redraw",
+          summary="Crop a region of a source image and write the result",
+          tags=["Redraw"])
+async def redraw(req: RedrawRequest):
+    """
+    Re-crop *source_path* at the supplied bounding box (full-image coords)
+    with optional extra padding on each side, write the result to
+    *output_path*. Typically called to overwrite an existing crop file
+    produced by the batch.
+    """
+    src = Path(req.source_path)
+    out = Path(req.output_path)
+    if not src.is_file():
+        raise HTTPException(404, f"Source not found: {src}")
+
+    def _do() -> dict:
+        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
+        if img is None:
+            raise IOError(f"Cannot read source: {src.name}")
+        ih, iw = img.shape[:2]
+        if not (0 <= req.x < iw and 0 <= req.y < ih and req.w > 0 and req.h > 0):
+            raise ValueError(
+                f"Box {req.x},{req.y} {req.w}x{req.h} is outside the source "
+                f"({iw}x{ih}).")
+        # Reuse the same padded-crop helper the desktop / batch path uses
+        crop, (cx1, cy1, cx2, cy2) = _padded_crop(
+            img, req.x, req.y, req.w, req.h, max(0, int(req.padding)))
+        if crop is None or crop.size == 0:
+            raise ValueError("Crop produced an empty image.")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(out), crop):
+            raise IOError(f"Could not write: {out}")
+        return {"out_w": int(crop.shape[1]), "out_h": int(crop.shape[0]),
+                "crop_x1": int(cx1), "crop_y1": int(cy1),
+                "crop_x2": int(cx2), "crop_y2": int(cy2)}
+
+    try:
+        info = await asyncio.to_thread(_do)
+    except (ValueError, IOError) as exc:
+        raise HTTPException(422, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"Redraw failed: {exc}")
+    return {"ok": True, "output_path": str(out), **info}
 
 
 # ---------------------------------------------------------------------------
