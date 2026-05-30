@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 from segmenter_core import (
     IMAGE_EXTS, MANIFEST_FIELDS,
     SegSettings, ImageResult,
-    segment_image, save_crops, flag_results,
+    segment_image, save_crops, save_crops_detailed, flag_results,
     resegment_or_bisect, _auto_output_dir,
 )
 
@@ -74,6 +74,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _no_cache_frontend(request, call_next):
+    """
+    Disable browser caching for the SPA assets.  The frontend uses in-browser
+    Babel, which fetches the .jsx files by URL; without an explicit no-cache
+    header the browser serves stale .jsx/.css heuristically and never picks up
+    edits.  API responses are unaffected.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/app/") or path.endswith((".jsx", ".css", ".js", ".html")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -203,10 +218,14 @@ async def batch(req: BatchRequest):
         for i, img_path in enumerate(images, 1):
             name = img_path.name
             try:
-                count, _debug, crop_info = await asyncio.to_thread(
-                    save_crops, img_path, out_dir, s, manifest_rows)
+                count, _debug, crop_info, boxes, iw, ih = await asyncio.to_thread(
+                    save_crops_detailed, img_path, out_dir, s, manifest_rows)
                 results.append(ImageResult(path=img_path, count=count, crop_info=crop_info))
-                evt = {"type": "progress", "i": i, "total": total, "name": name, "count": count}
+                # path/iw/ih/boxes let the frontend overlay live bounding boxes
+                # on the actual source image as each one is processed
+                evt = {"type": "progress", "i": i, "total": total, "name": name,
+                       "count": count, "path": str(img_path),
+                       "iw": iw, "ih": ih, "boxes": boxes}
             except Exception as exc:
                 results.append(ImageResult(path=img_path, count=0, flag="none"))
                 evt = {"type": "error", "i": i, "total": total, "name": name, "error": str(exc)}
