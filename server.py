@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import csv
 import json
 import mimetypes
@@ -35,6 +36,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -377,6 +379,236 @@ async def pick_folder(title: str = Query("Choose folder", description="Dialog ti
     except Exception as exc:
         raise HTTPException(500, f"Folder picker failed: {exc}")
     return {"path": chosen}
+
+
+# ---------------------------------------------------------------------------
+# VoucherVision Go — constants, persisted config, prompts, submit SSE
+# ---------------------------------------------------------------------------
+#
+# The browser does NOT talk to VVGo directly: the backend proxies the calls so
+# the API token stays on the user's machine (same trust model as the desktop
+# dialog) and the frontend doesn't need CORS access to the cloud API.  The
+# constants below mirror the values already used by segmenter_gui.py's
+# VVGoDialog so both interfaces share one config file.
+
+VVGO_SERVER_URL     = "https://vouchervision-go-738307415303.us-central1.run.app/"
+VVGO_DEFAULT_PROMPT = "SLTPvM_default.yaml"
+VVGO_MODELS = [
+    "gemini-3.1-flash-lite-preview",   # fast, unlimited — default
+    "gemini-3-flash-preview",          # fast, good quality
+    "gemini-3.1-pro-preview",          # highest quality, rate-limited
+]
+VVGO_MODEL_TIPS = {
+    "gemini-3.1-flash-lite-preview": "Fast · Unlimited usage · Recommended for large batches",
+    "gemini-3-flash-preview":         "Fast · Good quality",
+    "gemini-3.1-pro-preview":         "Highest quality · Rate-limited — use for spot-checks",
+}
+
+_APP_CFG_PATH = Path.home() / ".cryptogam_config.json"
+
+# Keys we expose through /api/config — every other key in the file is ignored
+# (some belong to the desktop GUI's settings persistence).
+_CFG_KEYS = {
+    "vvgo_token", "vvgo_model", "vvgo_prompt", "vvgo_json_dir",
+    "vvgo_workers", "vvgo_ocr", "vvgo_wfo", "vvgo_cop90", "vvgo_ocr_only",
+}
+
+
+def _cfg_load() -> dict:
+    try:
+        return json.loads(_APP_CFG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _cfg_save(updates: dict) -> None:
+    cfg = _cfg_load()
+    cfg.update(updates)
+    try:
+        _APP_CFG_PATH.write_text(
+            json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@app.get("/api/config", summary="Read persisted VVGo config", tags=["VVGo"])
+async def get_config():
+    """
+    Return the persisted VVGo settings (token, model, prompt, advanced flags).
+    Keys not yet saved are omitted. Localhost-only single-user tool — the
+    token is returned to the browser so the field can pre-populate, matching
+    the desktop dialog's behaviour.
+    """
+    cfg = _cfg_load()
+    return {k: v for k, v in cfg.items() if k in _CFG_KEYS}
+
+
+@app.put("/api/config", summary="Persist VVGo config updates", tags=["VVGo"])
+async def put_config(updates: dict):
+    """Merge whitelisted keys into the persisted config file."""
+    safe = {k: v for k, v in (updates or {}).items() if k in _CFG_KEYS}
+    if not safe:
+        raise HTTPException(400, "No recognised config keys in payload.")
+    _cfg_save(safe)
+    return {"ok": True, "saved": sorted(safe.keys())}
+
+
+@app.get("/api/vvgo-prompts",
+         summary="Fetch the VVGo prompt list (proxied)", tags=["VVGo"])
+async def vvgo_prompts(token: str = Query(..., description="VVGo bearer token")):
+    """
+    Proxy GET {VVGO_SERVER_URL}prompts with the user's token. The server reply
+    shape varies (list vs dict), so we normalise to a flat list of names.
+    """
+    def _do():
+        r = requests.get(
+            f"{VVGO_SERVER_URL}prompts",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, list):
+            names = [str(p) for p in data if p]
+        elif isinstance(data, dict):
+            names = [str(p) for p in
+                     data.get("prompts", data.get("names", [])) if p]
+        else:
+            names = []
+        return names or [VVGO_DEFAULT_PROMPT]
+
+    try:
+        names = await asyncio.to_thread(_do)
+    except requests.HTTPError as exc:
+        raise HTTPException(exc.response.status_code if exc.response else 502,
+                            f"VVGo /prompts failed: {exc}")
+    except Exception as exc:
+        raise HTTPException(502, f"VVGo /prompts failed: {exc}")
+    return {"prompts": names}
+
+
+@app.post("/api/vvgo-submit",
+          summary="Submit crops to VoucherVision Go (SSE)", tags=["VVGo"])
+async def vvgo_submit(body: dict):
+    """
+    Submit a list of crop image paths to the VVGo /process endpoint in
+    parallel, writing one JSON file per crop into `json_dir`. Streams
+    Server-Sent Events:
+
+        {type:"start",    total:N, json_dir:"..."}
+        {type:"progress", i, total, name, ok:true,  json_path:"..."}
+        {type:"progress", i, total, name, ok:false, error:"..."}
+        {type:"done",     ok, total, errors}
+
+    Expected request body:
+        {
+          token, model, prompt, json_dir, crop_paths: [...],
+          ocr_engine (or "" for "Same as LLM"),
+          include_wfo (bool), include_cop90 (bool), ocr_only (bool),
+          max_workers (int, default 4)
+        }
+    """
+    token       = (body or {}).get("token", "").strip()
+    if not token:
+        raise HTTPException(400, "Missing VVGo API token.")
+    crop_paths  = body.get("crop_paths") or []
+    if not crop_paths:
+        raise HTTPException(400, "No crop paths supplied.")
+    json_dir    = Path(body.get("json_dir") or "")
+    if not str(json_dir):
+        raise HTTPException(400, "Missing json_dir.")
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    model       = body.get("model")       or VVGO_MODELS[0]
+    prompt      = body.get("prompt")      or VVGO_DEFAULT_PROMPT
+    ocr_engine  = (body.get("ocr_engine") or "").strip()
+    include_wfo = bool(body.get("include_wfo", False))
+    include_cop = bool(body.get("include_cop90", False))
+    ocr_only    = bool(body.get("ocr_only", False))
+    max_workers = max(1, min(16, int(body.get("max_workers") or 4)))
+
+    post_data: dict = {"prompt": prompt, "skip_label_collage": "true"}
+    if model != VVGO_MODELS[0]:
+        post_data["llm_model"] = model
+    if ocr_engine:
+        post_data["engines"] = json.dumps([ocr_engine])
+    if include_wfo:
+        post_data["include_wfo"] = "true"
+    if include_cop:
+        post_data["include_cop90"] = "true"
+    if ocr_only:
+        post_data["ocr_only"] = "true"
+
+    paths: list[Path] = [Path(p) for p in crop_paths]
+    # Validate up front — much better than discovering mid-stream
+    for p in paths:
+        if not p.is_file():
+            raise HTTPException(404, f"Crop not found: {p}")
+
+    def _process_one(p: Path) -> dict:
+        try:
+            with p.open("rb") as fh:
+                r = requests.post(
+                    f"{VVGO_SERVER_URL}process",
+                    headers={"Authorization": f"Bearer {token}"},
+                    files={"file": (p.name, fh, "image/jpeg")},
+                    data=post_data,
+                    timeout=180,
+                )
+            r.raise_for_status()
+            out_path = json_dir / f"{p.stem}.json"
+            out_path.write_text(
+                json.dumps(r.json(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return {"name": p.name, "path": str(p), "ok": True,
+                    "json_path": str(out_path)}
+        except Exception as exc:
+            return {"name": p.name, "path": str(p), "ok": False,
+                    "error": str(exc)}
+
+    total = len(paths)
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def runner():
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers) as ex:
+                futs = {ex.submit(_process_one, p): p for p in paths}
+                for fut in concurrent.futures.as_completed(futs):
+                    res = fut.result()
+                    loop.call_soon_threadsafe(queue.put_nowait, res)
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+        # Kick off the worker pool in a background thread.
+        threading_done = asyncio.create_task(asyncio.to_thread(runner))
+
+        yield (f"data: " + json.dumps(
+            {"type": "start", "total": total, "json_dir": str(json_dir)})
+            + "\n\n")
+
+        i = 0
+        errors = 0
+        while True:
+            res = await queue.get()
+            if res is None:
+                break
+            i += 1
+            if not res["ok"]:
+                errors += 1
+            evt = {"type": "progress", "i": i, "total": total, **res}
+            yield "data: " + json.dumps(evt) + "\n\n"
+
+        await threading_done  # propagate any background exception
+        yield "data: " + json.dumps(
+            {"type": "done", "ok": total - errors,
+             "total": total, "errors": errors}) + "\n\n"
+
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------
