@@ -27,6 +27,7 @@ __all__ = [
     "_OVERSIZE_THRESHOLD",
     "segment_image",
     "save_crops",
+    "save_crops_detailed",
     "flag_results",
     "make_composite",
     "resegment_or_bisect",
@@ -332,16 +333,44 @@ def save_crops(image_path: Path, output_dir: Path,
     Detect packets, write individual crop files, append rows to *manifest_rows*.
     Crops land flat in *output_dir* (no sub-folders).
 
+    Backward-compatible 3-tuple wrapper around save_crops_detailed() — used by
+    the desktop Tkinter app.
+
     Returns
     -------
     saved_count : int
     debug_bgr   : np.ndarray
     crop_info   : list[(Path, width_px, height_px)]
     """
+    saved, debug, crop_info, _boxes, _iw, _ih = save_crops_detailed(
+        image_path, output_dir, s, manifest_rows)
+    return saved, debug, crop_info
+
+
+def save_crops_detailed(image_path: Path, output_dir: Path,
+                        s: SegSettings,
+                        manifest_rows: list) -> tuple[int, np.ndarray, list, list, int, int]:
+    """
+    Same as save_crops() but additionally returns the detection box geometry
+    and the full source-image dimensions, so a caller (e.g. the web server)
+    can overlay live bounding boxes on the source image.
+
+    Returns
+    -------
+    saved_count : int
+    debug_bgr   : np.ndarray
+    crop_info   : list[(Path, width_px, height_px)]
+    boxes       : list[dict]  — {idx, x, y, w, h} in FULL-image pixel coords
+                  (y already offset by the top-crop, so boxes map directly
+                  onto the unmodified source image)
+    iw_full     : int  — full source-image width  (px)
+    ih_full     : int  — full source-image height (px)
+    """
     img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise IOError(f"Cannot read: {image_path.name}")
 
+    ih_full, iw_full = img.shape[:2]
     bgr8      = _to_bgr8(img)
     top_px    = int(img.shape[0] * s.top_crop_frac)
     work8     = bgr8[top_px:, :]
@@ -354,9 +383,13 @@ def save_crops(image_path: Path, output_dir: Path,
 
     saved     = 0
     crop_info: list[tuple[Path, int, int]] = []
+    boxes:     list[dict] = []
 
     for idx, d in enumerate(dets, 1):
         x, y, w, h = d["x"], d["y"], d["w"], d["h"]
+        # Box in full-image coords (y shifted past the removed top strip)
+        boxes.append({"idx": idx, "x": int(x), "y": int(y + top_px),
+                      "w": int(w), "h": int(h)})
         if s.deskew:
             crop = _deskew_crop(work_orig, d["contour"], s.padding)
             bx1 = by1 = bx2 = by2 = ""
@@ -389,7 +422,7 @@ def save_crops(image_path: Path, output_dir: Path,
                 "deskewed":      s.deskew,
             })
 
-    return saved, _draw_boxes(work8, dets), crop_info
+    return saved, _draw_boxes(work8, dets), crop_info, boxes, iw_full, ih_full
 
 
 # ─── Public API: QC flagging ──────────────────────────────────────────────────

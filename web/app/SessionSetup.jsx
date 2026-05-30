@@ -204,6 +204,57 @@ function SessionSetupA({ rows, cols, setRows, setCols }) {
     </div>);
 }
 
+/* ── Segmented button group (single-select) ──────────────────── */
+function Seg({ value, options, onChange }) {
+  return (
+    <div className="seg" style={{ width: "100%" }}>
+      {options.map((o) =>
+        <button key={o.v}
+          className={value === o.v ? "on" : ""}
+          onClick={() => onChange(o.v)}>{o.label}</button>
+      )}
+    </div>);
+}
+
+/* ── Live preview — real source image + detected bounding boxes ──
+   Boxes arrive from /api/batch in full-image pixel coords. The <img>
+   (object-fit: contain) and the SVG overlay (viewBox = image dims,
+   preserveAspectRatio xMidYMid meet) letterbox identically, so the
+   polygons land exactly on the packets. Box styling reuses the same
+   .bb / .bb-ok classes as the aesthetic ScanPreview overlay. */
+function LivePreview({ preview, fallbackRows, fallbackCols }) {
+  if (!preview || !preview.src) {
+    return (
+      <ScanPreview
+        rows={fallbackRows} cols={fallbackCols}
+        flagged={{}}
+        tag="awaiting run…"
+        label={"[ source specimen scan ]\nrun segmentation to load live boxes"} />);
+  }
+  const { src, boxes, iw, ih, name } = preview;
+  const fontPx = Math.max(11, Math.round(ih * 0.016));
+  return (
+    <div className="scan-photo" style={{ position: "relative" }}>
+      <img src={src} alt={name}
+        style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+      <svg viewBox={`0 0 ${iw} ${ih}`} preserveAspectRatio="xMidYMid meet"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+        {(boxes || []).map((b, i) => {
+          const pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
+            .map((p) => p.join(",")).join(" ");
+          return (
+            <g key={i} className="bb bb-ok">
+              <polygon points={pts} strokeLinejoin="round" />
+              <text x={b.x + 5} y={b.y + fontPx + 3} fontSize={fontPx}
+                fontFamily="var(--bb-font, 'IBM Plex Mono', monospace)"
+                fontWeight="600" opacity="0.9">{String(b.idx).padStart(2, "0")}</text>
+            </g>);
+        })}
+      </svg>
+      <span className="ph-tag">{name} · {(boxes || []).length} packets</span>
+    </div>);
+}
+
 /* ── Variant B: top config strip + dominant preview + right log ─
    This is the locked production variant — wired to the live API. */
 function SessionSetupB({ rows, cols, setRows, setCols }) {
@@ -213,11 +264,32 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [running, setRunning] = useStateS1(false);
   const [logLines, setLogLines] = useStateS1(null);   // null → show design sample
   const [summary, setSummary] = useStateS1(null);
-  const [flagged, setFlagged] = useStateS1({ 4: "gold", 7: "red" });
+  const [preview, setPreview] = useStateS1(null);     // {src,boxes,iw,ih,name}
   const abortRef = useRefS1(null);
+
+  /* Advanced settings — mirror the original desktop app's SegSettings */
+  const [foreground, setForeground] = useStateS1("light");
+  const [threshold, setThreshold]   = useStateS1("otsu");
+  const [contrast, setContrast]     = useStateS1("none");
+  const [deskew, setDeskew]         = useStateS1(true);
+  const [topCrop, setTopCrop]       = useStateS1(0);     // %
+  const [padding, setPadding]       = useStateS1(30);    // px
+  const [minArea, setMinArea]       = useStateS1(0.05);  // %
 
   const addLog = (lvl, m) =>
     setLogLines((prev) => [...(prev || []), { t: _now(), lvl, m }]);
+
+  function buildSettings() {
+    return {
+      foreground,
+      threshold_mode: threshold,
+      contrast,
+      deskew,
+      padding: Number(padding),
+      top_crop_frac: Number(topCrop) / 100,
+      min_area_frac: Number(minArea) / 100,
+    };
+  }
 
   async function run() {
     if (running) {                       // acts as Stop while a batch streams
@@ -244,7 +316,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
         {
           input_dir: folder,
           output_dir: out.trim() ? out.trim() : null,
-          settings: {},   // server defaults (deskew on, foreground light)
+          settings: buildSettings(),
         },
         (evt) => {
           if (evt.type === "start") {
@@ -257,6 +329,11 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             addLog(evt.count ? "ok" : "warn",
               `${evt.name}: ${evt.count} packet${evt.count === 1 ? "" : "s"}`);
             setSummary(`${evt.i} / ${evt.total} images · ${packets} crops`);
+            /* Show the just-processed image with its detected boxes */
+            setPreview({
+              src: "/api/file?path=" + encodeURIComponent(evt.path),
+              boxes: evt.boxes, iw: evt.iw, ih: evt.ih, name: evt.name,
+            });
           } else if (evt.type === "error") {
             addLog("err", `${evt.name}: ${evt.error}`);
           } else if (evt.type === "done") {
@@ -269,6 +346,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             setSummary(`${packets} crops · ${evt.flagged.length} flagged`);
             window.__CDZ_SESSION = {
               outputDir, flagged: evt.flagged, sources: evt.total, packets,
+              settings: buildSettings(),
             };
           }
         },
@@ -285,7 +363,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
 
   return (
     <div className="setup-b">
-      <Region n={1} label="config strip — all session settings in one toolbar" pos="tl" className="config-strip">
+      <div className="config-strip">
         <div className="strip-grid">
 
           <div>
@@ -314,7 +392,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             </div>
           </div>
 
-          {/* Grid R×C — VVGo token moved to step 04 where it is actually used */}
+          {/* Grid R×C — guides reading-order numbering; does not constrain detection */}
           <div>
             <label className="label">Grid R × C</label>
             <div className="row" style={{ gap: 6 }}>
@@ -332,7 +410,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             </div>
           </div>
 
-          <div data-comment-anchor="00c1c9145e-div-200-11" className="adv-trigger-wrap">
+          <div className="adv-trigger-wrap">
             <label className="label">Processing</label>
             <button
               className={`btn${advOpen ? " adv-open" : ""}`}
@@ -342,61 +420,78 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             </button>
 
             {advOpen &&
-            <div className="adv-panel" data-comment-anchor="5dbb00988b-div-212-15">
+            <div className="adv-panel">
                 <span className="adv-panel-title">Advanced Settings</span>
+
+                <div className="adv-field">
+                  <label className="label">Foreground</label>
+                  <Seg value={foreground} onChange={setForeground}
+                    options={[{ v: "light", label: "Light" }, { v: "dark", label: "Dark" }, { v: "auto", label: "Auto" }]} />
+                </div>
+
                 <div className="adv-field">
                   <label className="label">Threshold</label>
-                  <div className="seg" style={{ width: "100%" }}>
-                    <button className="on">Otsu</button>
-                    <button>Fixed</button>
-                    <button>Adaptive</button>
+                  <Seg value={threshold} onChange={setThreshold}
+                    options={[{ v: "otsu", label: "Otsu" }, { v: "adaptive", label: "Adaptive" }, { v: "canny", label: "Canny" }]} />
+                </div>
+
+                <div className="adv-field">
+                  <label className="label">Contrast</label>
+                  <div className="select-wrap">
+                    <select className="input sans" value={contrast}
+                      onChange={(e) => setContrast(e.target.value)}>
+                      <option value="none">None</option>
+                      <option value="normalize">Normalize</option>
+                      <option value="clahe">CLAHE</option>
+                      <option value="both">Both</option>
+                    </select>
                   </div>
                 </div>
+
                 <div className="adv-field">
                   <label className="label">Deskew</label>
-                  <div className="seg">
-                    <button className="on">On</button>
-                    <button>Off</button>
-                  </div>
+                  <Seg value={deskew ? "on" : "off"} onChange={(v) => setDeskew(v === "on")}
+                    options={[{ v: "on", label: "On" }, { v: "off", label: "Off" }]} />
                 </div>
+
                 <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
-                  <label className="label">Contrast — 100%</label>
-                  <input type="range" className="slider" min="0" max="200" defaultValue="100" />
+                  <label className="label">Top crop — {topCrop}%</label>
+                  <input type="range" className="slider" min="0" max="30" step="1"
+                    value={topCrop} onChange={(e) => setTopCrop(+e.target.value)} />
                 </div>
+
                 <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
-                  <label className="label">Padding — 30 px</label>
-                  <input type="range" className="slider" min="0" max="80" defaultValue="30" />
+                  <label className="label">Padding — {padding} px</label>
+                  <input type="range" className="slider" min="0" max="80" step="1"
+                    value={padding} onChange={(e) => setPadding(+e.target.value)} />
+                </div>
+
+                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                  <label className="label">Min area — {(+minArea).toFixed(2)}%</label>
+                  <input type="range" className="slider" min="0.01" max="2" step="0.01"
+                    value={minArea} onChange={(e) => setMinArea(+e.target.value)} />
                 </div>
               </div>
             }
           </div>
 
           <div style={{ display: "flex", alignItems: "flex-end" }}>
-            <Region n={5} label="run" pos="tl" style={{ width: "100%" }}>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }}
-                onClick={run}>
-                <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
-              </button>
-            </Region>
+            <button className="btn btn-primary btn-lg" style={{ width: "100%" }}
+              onClick={run}>
+              <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
+            </button>
           </div>
 
         </div>
-      </Region>
+      </div>
 
       <div className="setup-b-main">
-        <Region n={6} label="preview — maximised" pos="tr" className="grow">
-          <div style={{ position: "relative", width: "100%", height: "100%" }}>
-            <ScanPreview
-              rows={rows} cols={cols}
-              flagged={flagged}
-              tag="IMG_0241.tif · 6240 × 4160 px"
-              label={"[ source specimen scan ]\ndrop / load batch image here"} />
-            <AnnoNote style={{ top: 14, left: 14 }}>7 · detected packet bounding boxes</AnnoNote>
-          </div>
-        </Region>
-        <Region n={8} label="activity log — docked right rail" pos="tr" className="setup-b-log">
+        <div className="setup-b-preview" style={{ flex: 1, minWidth: 0 }}>
+          <LivePreview preview={preview} fallbackRows={rows} fallbackCols={cols} />
+        </div>
+        <div className="setup-b-log">
           <ActivityLog compact lines={logLines} summary={summary} live={running} />
-        </Region>
+        </div>
       </div>
     </div>);
 }
