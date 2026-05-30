@@ -1,7 +1,43 @@
 /* global React, Region, AnnoNote, Icon, ICONS, Placeholder, Field, ScanPreview */
-const { useState: useStateS1 } = React;
+const { useState: useStateS1, useRef: useRefS1 } = React;
 
-/* Activity-log sample lines (shared by both variants) */
+/* ── Live API wiring ──────────────────────────────────────────────────────
+   The frontend is served by the FastAPI backend (same origin). /api/batch
+   streams Server-Sent Events; we parse them off the fetch body reader so the
+   activity log and counters update in real time. */
+
+const _now = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
+
+async function _streamBatch(body, onEvent, signal) {
+  const res = await fetch("/api/batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+      if (line) onEvent(JSON.parse(line.slice(5).trim()));
+    }
+  }
+}
+
+/* Fallback sample lines shown before the first run (preserves the design look) */
 const LOG_LINES = [
 { t: "10:42:01", lvl: "ok", m: "Loaded 18 source images from /input_images" },
 { t: "10:42:02", lvl: "info", m: "Foreground = light · threshold = otsu · morph = 0.0015" },
@@ -12,15 +48,18 @@ const LOG_LINES = [
 { t: "10:42:11", lvl: "err", m: "IMG_0244.tif: no packets detected — check foreground mode" },
 { t: "10:42:12", lvl: "info", m: "Writing packet_manifest.csv …" }];
 
-function ActivityLog({ compact }) {
+function ActivityLog({ compact, lines, summary, live }) {
+  const data = lines && lines.length ? lines : LOG_LINES;
   return (
     <div className="log" style={{ height: compact ? "100%" : 196 }}>
       <div className="log-head">
         <span className="panel-title">Activity Log</span>
-        <span className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>72 / 216 crops</span>
+        <span className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>
+          {summary || "72 / 216 crops"}
+        </span>
       </div>
       <div className="log-body">
-        {LOG_LINES.map((l, i) =>
+        {data.map((l, i) =>
         <div className="log-line" key={i}>
             <span className="log-t">{l.t}</span>
             <span className={`log-lvl ${l.lvl}`}>
@@ -29,11 +68,20 @@ function ActivityLog({ compact }) {
             <span className="log-m">{l.m}</span>
           </div>
         )}
+        {!lines &&
         <div className="log-line">
           <span className="log-t">10:42:13</span>
           <span className="log-lvl ok">OK</span>
           <span className="log-m">Done. 14 images segmented · 2 flagged for review<span className="caret">▋</span></span>
         </div>
+        }
+        {live &&
+        <div className="log-line">
+          <span className="log-t" />
+          <span className="log-lvl" />
+          <span className="log-m"><span className="caret">▋</span></span>
+        </div>
+        }
       </div>
     </div>);
 }
@@ -156,9 +204,84 @@ function SessionSetupA({ rows, cols, setRows, setCols }) {
     </div>);
 }
 
-/* ── Variant B: top config strip + dominant preview + right log ─ */
+/* ── Variant B: top config strip + dominant preview + right log ─
+   This is the locked production variant — wired to the live API. */
 function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [advOpen, setAdvOpen] = useStateS1(false);
+  const [folder, setFolder] = useStateS1("");
+  const [out, setOut] = useStateS1("");
+  const [running, setRunning] = useStateS1(false);
+  const [logLines, setLogLines] = useStateS1(null);   // null → show design sample
+  const [summary, setSummary] = useStateS1(null);
+  const [flagged, setFlagged] = useStateS1({ 4: "gold", 7: "red" });
+  const abortRef = useRefS1(null);
+
+  const addLog = (lvl, m) =>
+    setLogLines((prev) => [...(prev || []), { t: _now(), lvl, m }]);
+
+  async function run() {
+    if (running) {                       // acts as Stop while a batch streams
+      if (abortRef.current) abortRef.current.abort();
+      return;
+    }
+    if (!folder.trim()) {
+      setLogLines([{ t: _now(), lvl: "err", m: "No source folder set — type or paste an absolute path." }]);
+      setSummary("0 crops");
+      return;
+    }
+
+    setLogLines([{ t: _now(), lvl: "info", m: `Starting segmentation · source ${folder}` }]);
+    setSummary("starting…");
+    setRunning(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    let packets = 0;
+    let outputDir = null;
+
+    try {
+      await _streamBatch(
+        {
+          input_dir: folder,
+          output_dir: out.trim() ? out.trim() : null,
+          settings: {},   // server defaults (deskew on, foreground light)
+        },
+        (evt) => {
+          if (evt.type === "start") {
+            outputDir = evt.output_dir;
+            if (!out.trim()) setOut(outputDir);
+            addLog("ok", `Loaded ${evt.total} source images → ${outputDir}`);
+            setSummary(`0 / ${evt.total} images`);
+          } else if (evt.type === "progress") {
+            packets += evt.count;
+            addLog(evt.count ? "ok" : "warn",
+              `${evt.name}: ${evt.count} packet${evt.count === 1 ? "" : "s"}`);
+            setSummary(`${evt.i} / ${evt.total} images · ${packets} crops`);
+          } else if (evt.type === "error") {
+            addLog("err", `${evt.name}: ${evt.error}`);
+          } else if (evt.type === "done") {
+            const oversize = evt.flagged.filter((f) => f.flag === "oversize").length;
+            const zero = evt.flagged.filter((f) => f.flag === "none").length;
+            addLog("ok",
+              `Done. ${packets} packets across ${evt.total} images · ${evt.flagged.length} flagged`);
+            if (evt.flagged.length)
+              addLog("warn", `${oversize} oversize · ${zero} zero-detection — see QC Review`);
+            setSummary(`${packets} crops · ${evt.flagged.length} flagged`);
+            window.__CDZ_SESSION = {
+              outputDir, flagged: evt.flagged, sources: evt.total, packets,
+            };
+          }
+        },
+        ctrl.signal,
+      );
+    } catch (err) {
+      if (err.name === "AbortError") addLog("warn", "Stopped by user.");
+      else addLog("err", err.message);
+    } finally {
+      setRunning(false);
+      abortRef.current = null;
+    }
+  }
 
   return (
     <div className="setup-b">
@@ -168,16 +291,26 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
           <div>
             <label className="label">Input folder</label>
             <div className="input-row">
-              <input className="input" defaultValue="~/herbarium/input_images" />
-              <button className="btn btn-icon"><Icon d={ICONS.folder} /></button>
+              <input className="input" value={folder}
+                placeholder="~/herbarium/input_images"
+                onChange={(e) => setFolder(e.target.value)} />
+              <button className="btn btn-icon" title="Browse"
+                onClick={() => { const p = window.prompt("Paste the absolute path to the source folder:", folder); if (p && p.trim()) setFolder(p.trim()); }}>
+                <Icon d={ICONS.folder} />
+              </button>
             </div>
           </div>
 
           <div>
             <label className="label">Output folder</label>
             <div className="input-row">
-              <input className="input" defaultValue="~/herbarium/output_packets" />
-              <button className="btn btn-icon"><Icon d={ICONS.folder} /></button>
+              <input className="input" value={out}
+                placeholder="(auto · dated folder in source)"
+                onChange={(e) => setOut(e.target.value)} />
+              <button className="btn btn-icon" title="Browse"
+                onClick={() => { const p = window.prompt("Paste the absolute path to the output folder:", out); if (p && p.trim()) setOut(p.trim()); }}>
+                <Icon d={ICONS.folder} />
+              </button>
             </div>
           </div>
 
@@ -240,8 +373,9 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
 
           <div style={{ display: "flex", alignItems: "flex-end" }}>
             <Region n={5} label="run" pos="tl" style={{ width: "100%" }}>
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }}>
-                <Icon d={ICONS.play} size={15} /> Run
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }}
+                onClick={run}>
+                <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
               </button>
             </Region>
           </div>
@@ -254,14 +388,14 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
           <div style={{ position: "relative", width: "100%", height: "100%" }}>
             <ScanPreview
               rows={rows} cols={cols}
-              flagged={{ 4: "gold", 7: "red" }}
+              flagged={flagged}
               tag="IMG_0241.tif · 6240 × 4160 px"
               label={"[ source specimen scan ]\ndrop / load batch image here"} />
             <AnnoNote style={{ top: 14, left: 14 }}>7 · detected packet bounding boxes</AnnoNote>
           </div>
         </Region>
         <Region n={8} label="activity log — docked right rail" pos="tr" className="setup-b-log">
-          <ActivityLog compact />
+          <ActivityLog compact lines={logLines} summary={summary} live={running} />
         </Region>
       </div>
     </div>);
