@@ -59,6 +59,9 @@
 
   --bb-font: 'Courier Prime', monospace;
 
+  /* Dim mask outside the packet boxes — warm sepia to match the cream palette */
+  --preview-dim: rgba(60, 38, 22, 0.74);
+
   /* ── Shape tokens ───────────────────────────────────────── */
   --radius:    10px;
   --radius-sm:  6px;

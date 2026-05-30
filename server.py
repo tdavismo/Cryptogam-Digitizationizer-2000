@@ -344,6 +344,42 @@ async def serve_file(path: str = Query(..., description="Absolute path to an ima
 
 
 # ---------------------------------------------------------------------------
+# Endpoint 7: GET /api/pick-folder  — open a native folder dialog
+# ---------------------------------------------------------------------------
+
+@app.get("/api/pick-folder", summary="Open a native folder picker", tags=["Local"])
+async def pick_folder(title: str = Query("Choose folder", description="Dialog title"),
+                      initial: str = Query("", description="Initial directory")):
+    """
+    Open the OS folder-picker dialog and return the chosen absolute path.
+
+    Tkinter runs the dialog on the server (= the user's own machine for the
+    intended localhost deployment). The dialog must run on the main thread on
+    Windows, so we spawn a hidden Tk root, modal-lock it, and tear it down
+    immediately. Returns {"path": ""} when the user cancels.
+    """
+    def _open():
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        try:
+            initdir = initial if initial and Path(initial).is_dir() else None
+            chosen = filedialog.askdirectory(
+                title=title, initialdir=initdir, parent=root, mustexist=True)
+        finally:
+            root.destroy()
+        return chosen or ""
+
+    try:
+        chosen = await asyncio.to_thread(_open)
+    except Exception as exc:
+        raise HTTPException(500, f"Folder picker failed: {exc}")
+    return {"path": chosen}
+
+
+# ---------------------------------------------------------------------------
 # Static frontend  (mounted AFTER all /api routes so it doesn't shadow them)
 # ---------------------------------------------------------------------------
 

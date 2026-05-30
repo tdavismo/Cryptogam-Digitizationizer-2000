@@ -79,6 +79,12 @@
 .bb-active polygon { stroke: #E85C75; fill: rgba(232,92,117,0.22); stroke-width: 2.2; }
 .bb-active text    { fill: #E85C75; }
 
+/* Dim overlay outside the detected packet boxes — masked by the SVG <mask>
+   so only the non-packet area is covered. Each skin overrides --preview-dim
+   to tint the dim layer in keeping with its palette. */
+:root { --preview-dim: rgba(8, 12, 10, 0.72); }
+.lp-dim { fill: var(--preview-dim); }
+
 /* ── Screen 1 · Variant B ────────────────────────────────────── */
 .setup-b { display: flex; flex-direction: column; gap: 16px; height: var(--work-h); }
 .config-strip { background: var(--surface-1); border: 1px solid var(--border);

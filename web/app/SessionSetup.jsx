@@ -8,6 +8,50 @@ const { useState: useStateS1, useRef: useRefS1 } = React;
 
 const _now = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
 
+/* ── Persistence across view switches ─────────────────────────────────────
+   Session Setup is unmounted when the user clicks QC Review / Redraw / VVGo
+   and remounted on return.  We mirror every persistent piece of state into a
+   single window-scope object so the next mount picks up exactly where we left
+   off (preview image, full log, summary, all settings, folder paths).
+   This is intentionally global — App-level lifting would require restructuring
+   four screen components; a single bag matches the existing pattern used by
+   window.__CDZ_SESSION (the QC/VVGo handoff). */
+if (!window.__CDZ_SETUP_STATE) window.__CDZ_SETUP_STATE = {};
+
+function useSticky(key, initial) {
+  const [val, set] = useStateS1(
+    () => key in window.__CDZ_SETUP_STATE ? window.__CDZ_SETUP_STATE[key] : initial,
+  );
+  const wrappedSet = (next) => {
+    set((prev) => {
+      const v = typeof next === "function" ? next(prev) : next;
+      window.__CDZ_SETUP_STATE[key] = v;
+      return v;
+    });
+  };
+  return [val, wrappedSet];
+}
+
+/* ── Native folder picker via the backend ─────────────────────────────────
+   The browser cannot return an absolute path; even the File-System-Access
+   API only yields a sandboxed handle.  Since the server runs locally on the
+   same machine, we open Tkinter's native folder dialog server-side and
+   return the chosen path. */
+async function _pickFolder(title, initial) {
+  try {
+    const url = "/api/pick-folder?title=" + encodeURIComponent(title || "Choose folder") +
+                (initial ? "&initial=" + encodeURIComponent(initial) : "");
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    return j.path || null;            // null = cancelled
+  } catch (e) {
+    /* Fallback to prompt() if the endpoint is unavailable for any reason */
+    const p = window.prompt(title || "Paste the absolute folder path:", initial || "");
+    return p && p.trim() ? p.trim() : null;
+  }
+}
+
 async function _streamBatch(body, onEvent, signal) {
   const res = await fetch("/api/batch", {
     method: "POST",
@@ -221,7 +265,14 @@ function Seg({ value, options, onChange }) {
    (object-fit: contain) and the SVG overlay (viewBox = image dims,
    preserveAspectRatio xMidYMid meet) letterbox identically, so the
    polygons land exactly on the packets. Box styling reuses the same
-   .bb / .bb-ok classes as the aesthetic ScanPreview overlay. */
+   .bb / .bb-ok classes as the aesthetic ScanPreview overlay.
+
+   The dim-outside-boxes effect uses an SVG <mask>: the mask fills the whole
+   image area white (= overlay visible) then punches transparent black
+   rectangles where the packets are (= overlay hidden). The masked overlay
+   rect's colour and opacity come from --preview-dim-* CSS variables so each
+   skin themes it independently (sunset violet for vaporwave, sepia for
+   retro95, near-black for blueprint). */
 function LivePreview({ preview, fallbackRows, fallbackCols }) {
   if (!preview || !preview.src) {
     return (
@@ -232,14 +283,30 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
         label={"[ source specimen scan ]\nrun segmentation to load live boxes"} />);
   }
   const { src, boxes, iw, ih, name } = preview;
+  const list   = boxes || [];
   const fontPx = Math.max(11, Math.round(ih * 0.016));
+  const maskId = "lp-mask-" + (name || "x").replace(/[^A-Za-z0-9_-]/g, "_");
+
   return (
-    <div className="scan-photo" style={{ position: "relative" }}>
+    <div className="scan-photo live-preview" style={{ position: "relative" }}>
       <img src={src} alt={name}
         style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
       <svg viewBox={`0 0 ${iw} ${ih}`} preserveAspectRatio="xMidYMid meet"
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-        {(boxes || []).map((b, i) => {
+        {/* Mask: white = dim, black = clear (the packet windows) */}
+        <defs>
+          <mask id={maskId} maskUnits="userSpaceOnUse">
+            <rect x="0" y="0" width={iw} height={ih} fill="white" />
+            {list.map((b, i) =>
+              <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="black" />
+            )}
+          </mask>
+        </defs>
+        {/* Single dim overlay, masked so only the non-packet area is covered */}
+        <rect x="0" y="0" width={iw} height={ih} mask={`url(#${maskId})`}
+          className="lp-dim" />
+        {/* Bounding box outlines + numbers */}
+        {list.map((b, i) => {
           const pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
             .map((p) => p.join(",")).join(" ");
           return (
@@ -251,7 +318,7 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
             </g>);
         })}
       </svg>
-      <span className="ph-tag">{name} · {(boxes || []).length} packets</span>
+      <span className="ph-tag">{name} · {list.length} packets</span>
     </div>);
 }
 
@@ -259,22 +326,24 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
    This is the locked production variant — wired to the live API. */
 function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [advOpen, setAdvOpen] = useStateS1(false);
-  const [folder, setFolder] = useStateS1("");
-  const [out, setOut] = useStateS1("");
-  const [running, setRunning] = useStateS1(false);
-  const [logLines, setLogLines] = useStateS1(null);   // null → show design sample
-  const [summary, setSummary] = useStateS1(null);
-  const [preview, setPreview] = useStateS1(null);     // {src,boxes,iw,ih,name}
+  /* useSticky restores prior values from window.__CDZ_SETUP_STATE so the
+     preview, log, and folder paths survive tab switches. */
+  const [folder, setFolder]     = useSticky("folder", "");
+  const [out, setOut]           = useSticky("out", "");
+  const [logLines, setLogLines] = useSticky("logLines", null);  // null → design sample
+  const [summary, setSummary]   = useSticky("summary", null);
+  const [preview, setPreview]   = useSticky("preview", null);   // {src,boxes,iw,ih,name}
+  const [running, setRunning]   = useStateS1(false);            // never persisted
   const abortRef = useRefS1(null);
 
   /* Advanced settings — mirror the original desktop app's SegSettings */
-  const [foreground, setForeground] = useStateS1("light");
-  const [threshold, setThreshold]   = useStateS1("otsu");
-  const [contrast, setContrast]     = useStateS1("none");
-  const [deskew, setDeskew]         = useStateS1(true);
-  const [topCrop, setTopCrop]       = useStateS1(0);     // %
-  const [padding, setPadding]       = useStateS1(30);    // px
-  const [minArea, setMinArea]       = useStateS1(0.05);  // %
+  const [foreground, setForeground] = useSticky("foreground", "light");
+  const [threshold, setThreshold]   = useSticky("threshold", "otsu");
+  const [contrast, setContrast]     = useSticky("contrast", "none");
+  const [deskew, setDeskew]         = useSticky("deskew", true);
+  const [topCrop, setTopCrop]       = useSticky("topCrop", 0);     // %
+  const [padding, setPadding]       = useSticky("padding", 30);    // px
+  const [minArea, setMinArea]       = useSticky("minArea", 0.05);  // %
 
   const addLog = (lvl, m) =>
     setLogLines((prev) => [...(prev || []), { t: _now(), lvl, m }]);
@@ -373,7 +442,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
                 placeholder="~/herbarium/input_images"
                 onChange={(e) => setFolder(e.target.value)} />
               <button className="btn btn-icon" title="Browse"
-                onClick={() => { const p = window.prompt("Paste the absolute path to the source folder:", folder); if (p && p.trim()) setFolder(p.trim()); }}>
+                onClick={async () => { const p = await _pickFolder("Choose source folder", folder); if (p) setFolder(p); }}>
                 <Icon d={ICONS.folder} />
               </button>
             </div>
@@ -386,7 +455,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
                 placeholder="(auto · dated folder in source)"
                 onChange={(e) => setOut(e.target.value)} />
               <button className="btn btn-icon" title="Browse"
-                onClick={() => { const p = window.prompt("Paste the absolute path to the output folder:", out); if (p && p.trim()) setOut(p.trim()); }}>
+                onClick={async () => { const p = await _pickFolder("Choose output folder", out || folder); if (p) setOut(p); }}>
                 <Icon d={ICONS.folder} />
               </button>
             </div>

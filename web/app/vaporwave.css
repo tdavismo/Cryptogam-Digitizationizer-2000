@@ -58,6 +58,9 @@
   --mono:  'Space Mono', 'IBM Plex Mono', ui-monospace, monospace;
 
   --bb-font: 'Space Mono', monospace;
+
+  /* Dim mask outside the packet boxes — sunset violet, slightly punchier */
+  --preview-dim: rgba(28, 8, 56, 0.78);
 }
 
 /* ── Sunset gradient background + perspective grid overlay ───── */
