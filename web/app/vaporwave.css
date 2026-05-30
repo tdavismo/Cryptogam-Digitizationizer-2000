@@ -1,0 +1,634 @@
+/* ─────────────────────────────────────────────────────────────
+   Cryptogam Digitizationizer 2000 — VAPORWAVE '95 SKIN
+   Pure aesthetic overlay. Layout, components, and behaviour
+   are inherited from theme.css + screens.css unchanged.
+
+   Palette  — sunset purple/magenta + cyan accent
+   Display  — Monoton (chrome) + Audiowide (titles)
+   Body     — Space Grotesk
+   Mono     — Space Mono
+   ───────────────────────────────────────────────────────────── */
+
+.aesthetic-vaporwave {
+  /* Sunset purples */
+  --bg:          #160827;
+  --surface-1:   #20123A;
+  --surface-2:   #2A1A4A;
+  --surface-3:   #392560;
+  --well:        #0E041C;
+  --border:      #3D2466;
+  --border-2:    #553494;
+  --border-3:    #7849C1;
+
+  /* Warm text — cream-pink → muted lavender */
+  --text:        #FFEBFC;
+  --text-2:      #D7B7EB;
+  --text-3:      #9C7BBE;
+  --text-4:      #6B4F90;
+
+  /* Hot pink primary (was U of G red) */
+  --red:         #FF3EAA;
+  --red-hover:   #FF5EBE;
+  --red-bright:  #FF7AC8;
+  --red-soft:    rgba(255, 62, 170, 0.18);
+  --red-line:    rgba(255, 130, 205, 0.55);
+
+  /* Mint turquoise — approved / complete */
+  --green:       #5EFCC6;
+  --green-mid:   #2EC79C;
+  --green-deep:  #1B5C4A;
+  --green-soft:  rgba(94, 252, 198, 0.14);
+  --green-line:  rgba(94, 252, 198, 0.55);
+
+  /* Cyan — submitting / in-progress */
+  --blue:        #5EE7FF;
+  --blue-soft:   rgba(94, 231, 255, 0.14);
+
+  /* Sun yellow — warning / oversize / queued */
+  --gold:        #FFD93D;
+  --gold-soft:   rgba(255, 217, 61, 0.14);
+
+  /* Annotation overlay — bright magenta (was cyan) */
+  --anno:        #FF6AD5;
+  --anno-bg:     #1F0B33;
+
+  /* Type — keep fallbacks to original system */
+  --serif: 'Audiowide', 'Source Serif 4', Georgia, serif;
+  --sans:  'Space Grotesk', 'Source Sans 3', system-ui, sans-serif;
+  --mono:  'Space Mono', 'IBM Plex Mono', ui-monospace, monospace;
+
+  --bb-font: 'Space Mono', monospace;
+}
+
+/* ── Sunset gradient background + perspective grid overlay ───── */
+.aesthetic-vaporwave {
+  background:
+    radial-gradient(ellipse 90% 55% at 50% 100%, rgba(255, 110, 165, 0.22), transparent 65%),
+    radial-gradient(ellipse 70% 45% at 50% 0%, rgba(120, 73, 193, 0.20), transparent 70%),
+    linear-gradient(180deg, #150826 0%, #1A0B30 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+/* Subtle perspective grid — vaporwave signature, restrained */
+.aesthetic-vaporwave::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 106, 213, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 231, 255, 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+  pointer-events: none;
+  z-index: 0;
+}
+.aesthetic-vaporwave .shell { position: relative; z-index: 1; }
+
+/* ── Topbar — glass + animated gradient underline ────────────── */
+.aesthetic-vaporwave .topbar {
+  background: linear-gradient(180deg, rgba(46, 26, 76, 0.85) 0%, rgba(22, 8, 39, 0.85) 100%);
+  border-bottom: 1px solid transparent;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  position: sticky;
+  overflow: visible;
+}
+.aesthetic-vaporwave .topbar::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%, rgba(255, 106, 213, 0.0) 8%,
+    #FF6AD5 28%, #C774E8 50%, #5EE7FF 72%,
+    rgba(94, 231, 255, 0.0) 92%, transparent 100%);
+  background-size: 200% 100%;
+  animation: vapor-slide 14s linear infinite;
+}
+@keyframes vapor-slide {
+  0%   { background-position: 0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Fern mark — pink tint */
+.aesthetic-vaporwave .brand .fern g {
+  stroke: #FF6AD5;
+  filter: drop-shadow(0 0 4px rgba(255, 106, 213, 0.5));
+}
+
+/* Brand wordmark — chrome gradient text in Monoton */
+.aesthetic-vaporwave .brand-uni {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  color: #5EE7FF;
+  letter-spacing: 0.22em;
+  text-shadow: 0 0 8px rgba(94, 231, 255, 0.4);
+}
+.aesthetic-vaporwave .brand-app {
+  font-family: 'Monoton', 'Audiowide', serif;
+  font-size: 19px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  background: linear-gradient(180deg, #FFEBFC 0%, #FF6AD5 50%, #C13584 100%);
+  background-size: 100% 220%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 0 rgba(40, 8, 80, 0.55));
+  animation: chrome-shimmer 9s ease-in-out infinite;
+}
+@keyframes chrome-shimmer {
+  0%, 100% { background-position: 0% 0%; }
+  50%      { background-position: 0% 100%; }
+}
+.aesthetic-vaporwave .brand-app .ver {
+  -webkit-text-fill-color: #5EE7FF;
+  color: #5EE7FF;
+  font-family: 'Audiowide', sans-serif;
+  font-size: 11px;
+  margin-left: 4px;
+}
+.aesthetic-vaporwave .topbar-meta { color: #B89DD8; font-family: 'Space Mono', monospace; }
+.aesthetic-vaporwave .topbar-meta .dot {
+  background: #5EFCC6;
+  box-shadow: 0 0 10px rgba(94, 252, 198, 0.7);
+}
+
+/* ── Tabs ────────────────────────────────────────────────────── */
+.aesthetic-vaporwave .tabs {
+  background: rgba(32, 18, 58, 0.65);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom-color: rgba(85, 52, 148, 0.6);
+}
+.aesthetic-vaporwave .tab {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  position: relative;
+}
+.aesthetic-vaporwave .tab:hover { color: #FF6AD5; }
+.aesthetic-vaporwave .tab.active {
+  color: #5EE7FF;
+  border-bottom-color: transparent;
+}
+.aesthetic-vaporwave .tab.active::after {
+  content: "";
+  position: absolute;
+  left: 14px; right: 14px; bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, #FF6AD5 0%, #5EE7FF 100%);
+  border-radius: 2px;
+  box-shadow: 0 0 10px rgba(255, 106, 213, 0.6);
+}
+.aesthetic-vaporwave .tab .tnum {
+  font-family: 'Space Mono', monospace;
+  background: rgba(255, 62, 170, 0.08);
+}
+.aesthetic-vaporwave .tab.active .tnum {
+  color: #FF6AD5;
+  border-color: rgba(255, 106, 213, 0.6);
+  background: rgba(255, 62, 170, 0.15);
+}
+
+/* ── Screen header ───────────────────────────────────────────── */
+.aesthetic-vaporwave .screen-kicker {
+  font-family: 'Space Mono', monospace;
+  color: #5EE7FF;
+  letter-spacing: 0.22em;
+}
+.aesthetic-vaporwave .screen-title {
+  font-family: 'Audiowide', sans-serif;
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: 0.015em;
+  color: #FFEBFC;
+  text-shadow: 0 0 22px rgba(255, 106, 213, 0.22);
+}
+.aesthetic-vaporwave .screen-sub {
+  font-family: 'Space Grotesk', sans-serif;
+  color: #D7B7EB;
+}
+
+/* ── Panels — translucent glass with subtle inner glow ────────── */
+.aesthetic-vaporwave .panel {
+  background: rgba(42, 26, 74, 0.55);
+  border: 1px solid rgba(85, 52, 148, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: inset 0 1px 0 rgba(255, 106, 213, 0.08);
+}
+.aesthetic-vaporwave .panel-head {
+  border-bottom-color: rgba(85, 52, 148, 0.45);
+}
+.aesthetic-vaporwave .panel-title {
+  font-family: 'Space Mono', monospace;
+  color: #5EE7FF;
+  letter-spacing: 0.16em;
+  text-shadow: 0 0 6px rgba(94, 231, 255, 0.3);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.aesthetic-vaporwave .btn {
+  font-family: 'Space Grotesk', sans-serif;
+  background: rgba(57, 37, 96, 0.7);
+  border: 1px solid rgba(120, 73, 193, 0.5);
+  color: #FFEBFC;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: all .18s ease;
+}
+.aesthetic-vaporwave .btn:hover {
+  background: rgba(80, 50, 130, 0.85);
+  border-color: #FF6AD5;
+  color: #FF6AD5;
+  box-shadow: 0 0 0 1px rgba(255, 106, 213, 0.3), 0 4px 14px rgba(255, 62, 170, 0.18);
+}
+
+.aesthetic-vaporwave .btn-primary {
+  background: linear-gradient(135deg, #FF3EAA 0%, #C13584 100%);
+  border: 1px solid transparent;
+  color: #fff;
+  font-weight: 600;
+  text-shadow: 0 1px 0 rgba(80, 10, 50, 0.4);
+  box-shadow:
+    0 0 0 1px rgba(255, 130, 205, 0.45),
+    0 6px 18px rgba(255, 62, 170, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.aesthetic-vaporwave .btn-primary:hover {
+  background: linear-gradient(135deg, #FF5EBE 0%, #D8458F 100%);
+  border-color: transparent;
+  color: #fff;
+  box-shadow:
+    0 0 0 1px rgba(255, 160, 220, 0.6),
+    0 8px 22px rgba(255, 62, 170, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.aesthetic-vaporwave .btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: #B89DD8;
+}
+.aesthetic-vaporwave .btn-ghost:hover {
+  background: rgba(80, 50, 130, 0.4);
+  color: #FF6AD5;
+}
+
+/* ── Inputs / wells ──────────────────────────────────────────── */
+.aesthetic-vaporwave .input {
+  background: rgba(15, 4, 28, 0.75);
+  border-color: rgba(120, 73, 193, 0.5);
+  color: #FFEBFC;
+  font-family: 'Space Mono', monospace;
+}
+.aesthetic-vaporwave .input::placeholder { color: #6B4F90; }
+.aesthetic-vaporwave .input:focus {
+  border-color: #FF6AD5;
+  box-shadow:
+    0 0 0 3px rgba(255, 106, 213, 0.22),
+    0 0 14px rgba(255, 106, 213, 0.25);
+}
+.aesthetic-vaporwave .input.sans { font-family: 'Space Grotesk', sans-serif; }
+
+.aesthetic-vaporwave .label {
+  font-family: 'Space Mono', monospace;
+  color: #9C7BBE;
+  letter-spacing: 0.12em;
+}
+
+.aesthetic-vaporwave .stepper button {
+  background: rgba(57, 37, 96, 0.7);
+  border-color: rgba(120, 73, 193, 0.5);
+  color: #D7B7EB;
+}
+.aesthetic-vaporwave .stepper button:hover {
+  background: rgba(85, 52, 148, 0.85);
+  color: #FF6AD5;
+}
+
+/* Segmented toggle */
+.aesthetic-vaporwave .seg {
+  background: rgba(15, 4, 28, 0.7);
+  border-color: rgba(120, 73, 193, 0.5);
+}
+.aesthetic-vaporwave .seg button { font-family: 'Space Grotesk', sans-serif; color: #9C7BBE; }
+.aesthetic-vaporwave .seg button:hover { color: #FF6AD5; }
+.aesthetic-vaporwave .seg button.on {
+  background: linear-gradient(135deg, rgba(255, 62, 170, 0.25), rgba(94, 231, 255, 0.18));
+  color: #FFEBFC;
+  box-shadow: inset 0 0 0 1px rgba(255, 106, 213, 0.4);
+}
+
+/* Slider */
+.aesthetic-vaporwave .slider::-webkit-slider-thumb {
+  background: linear-gradient(135deg, #FF3EAA, #C13584);
+  border-color: #160827;
+  box-shadow: 0 0 8px rgba(255, 62, 170, 0.6);
+}
+.aesthetic-vaporwave .slider::-moz-range-thumb {
+  background: linear-gradient(135deg, #FF3EAA, #C13584);
+  border-color: #160827;
+  box-shadow: 0 0 8px rgba(255, 62, 170, 0.6);
+}
+
+/* ── Status pills — vibrant with glow ─────────────────────────── */
+.aesthetic-vaporwave .pill {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+}
+.aesthetic-vaporwave .pill.green { box-shadow: 0 0 12px rgba(94, 252, 198, 0.28); }
+.aesthetic-vaporwave .pill.red   { box-shadow: 0 0 12px rgba(255, 130, 205, 0.28); }
+.aesthetic-vaporwave .pill.blue  { box-shadow: 0 0 12px rgba(94, 231, 255, 0.28); }
+.aesthetic-vaporwave .pill.gold  { box-shadow: 0 0 12px rgba(255, 217, 61, 0.22); }
+
+/* ── ScanPreview — dark purple with cyan/magenta grid ────────── */
+.aesthetic-vaporwave .scan-photo {
+  background:
+    linear-gradient(rgba(255, 106, 213, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 231, 255, 0.07) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 50%, #1F0F33 0%, #0E041C 100%);
+  background-size: 32px 32px, 32px 32px, 100% 100%;
+  border-color: rgba(120, 73, 193, 0.5);
+}
+.aesthetic-vaporwave .scan-label {
+  font-family: 'Space Mono', monospace;
+  color: #9C7BBE;
+}
+.aesthetic-vaporwave .ph-tag {
+  background: rgba(15, 4, 28, 0.75);
+  border-color: rgba(120, 73, 193, 0.5);
+  color: #5EE7FF;
+  font-family: 'Space Mono', monospace;
+}
+
+/* Bounding-box overlay colour overrides */
+.aesthetic-vaporwave .bb-ok     polygon { stroke: #5EFCC6; fill: rgba(94, 252, 198, 0.08); }
+.aesthetic-vaporwave .bb-ok     text    { fill: #5EFCC6; }
+.aesthetic-vaporwave .bb-red    polygon { stroke: #FF7AC8; fill: rgba(255, 122, 200, 0.18); }
+.aesthetic-vaporwave .bb-red    text    { fill: #FF7AC8; }
+.aesthetic-vaporwave .bb-gold   polygon { stroke: #FFD93D; fill: rgba(255, 217, 61, 0.16); }
+.aesthetic-vaporwave .bb-gold   text    { fill: #FFD93D; }
+.aesthetic-vaporwave .bb-active polygon {
+  stroke: #5EE7FF; fill: rgba(94, 231, 255, 0.25); stroke-width: 2.5;
+  filter: drop-shadow(0 0 4px rgba(94, 231, 255, 0.6));
+}
+.aesthetic-vaporwave .bb-active text { fill: #5EE7FF; }
+
+/* ── Activity log — CRT vibes (cream-pink on inky purple) ────── */
+.aesthetic-vaporwave .log {
+  background: rgba(20, 8, 38, 0.7);
+  border-color: rgba(120, 73, 193, 0.5);
+}
+.aesthetic-vaporwave .log-head {
+  border-bottom-color: rgba(85, 52, 148, 0.45);
+}
+.aesthetic-vaporwave .log-body {
+  background: linear-gradient(180deg, #0E041C 0%, #15082A 100%);
+  font-family: 'Space Mono', monospace;
+  font-size: 11.5px;
+  color: #FFEBFC;
+}
+.aesthetic-vaporwave .log-t   { color: #6B4F90; }
+.aesthetic-vaporwave .log-m   { color: #D7B7EB; }
+.aesthetic-vaporwave .log-lvl.ok   { color: #5EFCC6; text-shadow: 0 0 8px rgba(94, 252, 198, 0.5); }
+.aesthetic-vaporwave .log-lvl.warn { color: #FFD93D; text-shadow: 0 0 8px rgba(255, 217, 61, 0.4); }
+.aesthetic-vaporwave .log-lvl.err  { color: #FF7AC8; text-shadow: 0 0 8px rgba(255, 122, 200, 0.55); }
+.aesthetic-vaporwave .log-lvl.info { color: #5EE7FF; }
+.aesthetic-vaporwave .caret        { color: #5EFCC6; }
+
+/* ── Annotation overlay (magenta dashed now) ─────────────────── */
+.aesthetic-vaporwave.anno-on .region::after {
+  border-color: #FF6AD5;
+  opacity: 0.9;
+  box-shadow: 0 0 0 1px rgba(255, 106, 213, 0.18);
+}
+.aesthetic-vaporwave .anno-label,
+.aesthetic-vaporwave .anno-note {
+  background: rgba(31, 11, 51, 0.92);
+  border-color: #FF6AD5;
+  color: #FFEBFC;
+  font-family: 'Space Mono', monospace;
+  box-shadow: 0 0 12px rgba(255, 106, 213, 0.35);
+}
+.aesthetic-vaporwave .anno-label .num {
+  color: #1F0B33;
+  background: #FF6AD5;
+}
+
+/* ── Tabs and chrome elements polish ─────────────────────────── */
+.aesthetic-vaporwave .hint { color: #B89DD8; font-family: 'Space Grotesk', sans-serif; }
+.aesthetic-vaporwave .mono { font-family: 'Space Mono', monospace; }
+.aesthetic-vaporwave .kbd {
+  font-family: 'Space Mono', monospace;
+  background: rgba(57, 37, 96, 0.7);
+  border-color: rgba(120, 73, 193, 0.5);
+  color: #D7B7EB;
+}
+
+/* ── Filter chips ────────────────────────────────────────────── */
+.aesthetic-vaporwave .filterbar {
+  background: rgba(15, 4, 28, 0.65);
+  border-color: rgba(85, 52, 148, 0.5);
+}
+.aesthetic-vaporwave .fchip { color: #9C7BBE; font-family: 'Space Grotesk', sans-serif; }
+.aesthetic-vaporwave .fchip:hover { color: #FF6AD5; }
+.aesthetic-vaporwave .fchip.on {
+  background: linear-gradient(135deg, rgba(255, 62, 170, 0.22), rgba(94, 231, 255, 0.18));
+  color: #FFEBFC;
+  box-shadow: inset 0 0 0 1px rgba(255, 106, 213, 0.4);
+}
+
+/* ── QC crop thumbnails ──────────────────────────────────────── */
+.aesthetic-vaporwave .qc-grid-wrap {
+  background: rgba(42, 26, 74, 0.55);
+  border-color: rgba(85, 52, 148, 0.5);
+  backdrop-filter: blur(10px);
+}
+.aesthetic-vaporwave .thumb {
+  background: rgba(42, 26, 74, 0.85);
+  border-color: rgba(120, 73, 193, 0.4);
+}
+.aesthetic-vaporwave .thumb:hover { border-color: #FF6AD5; }
+.aesthetic-vaporwave .thumb.sel {
+  border-color: #FF6AD5;
+  box-shadow: 0 0 0 3px rgba(255, 106, 213, 0.3), 0 0 18px rgba(255, 106, 213, 0.35);
+}
+.aesthetic-vaporwave .thumb.green { border-left: 3px solid #5EFCC6; }
+.aesthetic-vaporwave .thumb.red   { border-left: 3px solid #FF7AC8; }
+.aesthetic-vaporwave .thumb.gold  { border-left: 3px solid #FFD93D; }
+.aesthetic-vaporwave .sdot.green   { background: #5EFCC6; box-shadow: 0 0 6px rgba(94, 252, 198, 0.7); }
+.aesthetic-vaporwave .sdot.red     { background: #FF7AC8; box-shadow: 0 0 6px rgba(255, 122, 200, 0.7); }
+.aesthetic-vaporwave .sdot.gold    { background: #FFD93D; box-shadow: 0 0 6px rgba(255, 217, 61, 0.6); }
+.aesthetic-vaporwave .sdot.neutral { background: #9C7BBE; }
+.aesthetic-vaporwave .thumb-foot { border-top-color: rgba(85, 52, 148, 0.4); }
+.aesthetic-vaporwave .thumb-foot .mono { color: #9C7BBE; }
+
+/* QC detail meta */
+.aesthetic-vaporwave .mk { color: #9C7BBE; font-family: 'Space Grotesk', sans-serif; }
+.aesthetic-vaporwave .mv { color: #FFEBFC; font-family: 'Space Mono', monospace; }
+
+/* ── Striped placeholder — recolour stripes for purple bg ─────── */
+.aesthetic-vaporwave .ph {
+  background-color: #0E041C;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0, transparent 7px,
+    rgba(255, 106, 213, 0.035) 7px, rgba(255, 106, 213, 0.035) 14px
+  );
+  border-color: rgba(120, 73, 193, 0.45);
+}
+.aesthetic-vaporwave .ph-label { color: #6B4F90; font-family: 'Space Mono', monospace; }
+
+/* ── Submission progress bar ─────────────────────────────────── */
+.aesthetic-vaporwave .progress-track {
+  background: rgba(15, 4, 28, 0.7);
+  border-color: rgba(85, 52, 148, 0.5);
+}
+.aesthetic-vaporwave .progress-seg.green { background: linear-gradient(90deg, #5EFCC6, #2EC79C); }
+.aesthetic-vaporwave .progress-seg.blue  { background: linear-gradient(90deg, #5EE7FF, #3CB6E8); box-shadow: 0 0 10px rgba(94, 231, 255, 0.4); }
+.aesthetic-vaporwave .progress-seg.red   { background: linear-gradient(90deg, #FF7AC8, #FF3EAA); }
+
+/* ── Submission rows ─────────────────────────────────────────── */
+.aesthetic-vaporwave .submit-top {
+  background: rgba(42, 26, 74, 0.55);
+  border-color: rgba(85, 52, 148, 0.5);
+  backdrop-filter: blur(10px);
+}
+.aesthetic-vaporwave .subrow { border-bottom-color: rgba(85, 52, 148, 0.4); }
+.aesthetic-vaporwave .subrow.error { background: rgba(255, 62, 170, 0.10); }
+.aesthetic-vaporwave .subtable-head { color: #9C7BBE; font-family: 'Space Mono', monospace; border-bottom-color: rgba(85, 52, 148, 0.5); }
+.aesthetic-vaporwave .ts-sci { color: #FFEBFC; font-family: 'Audiowide', sans-serif; font-style: normal; }
+.aesthetic-vaporwave .ts-meta { color: #B89DD8; }
+
+/* ── Config strip & adv panel (Setup B) ──────────────────────── */
+.aesthetic-vaporwave .config-strip {
+  background: rgba(42, 26, 74, 0.55);
+  border-color: rgba(85, 52, 148, 0.5);
+  backdrop-filter: blur(10px);
+}
+.aesthetic-vaporwave .adv-panel {
+  background: rgba(20, 8, 38, 0.92);
+  border-color: rgba(120, 73, 193, 0.6);
+  box-shadow:
+    0 0 0 1px rgba(255, 106, 213, 0.15),
+    0 12px 38px rgba(0, 0, 0, 0.7),
+    0 0 28px rgba(255, 62, 170, 0.18);
+  backdrop-filter: blur(14px);
+}
+.aesthetic-vaporwave .adv-panel-title {
+  color: #5EE7FF;
+  font-family: 'Space Mono', monospace;
+  border-bottom-color: rgba(85, 52, 148, 0.5);
+}
+
+/* ── Redraw boundary editor ──────────────────────────────────── */
+.aesthetic-vaporwave .editor-canvas {
+  background:
+    linear-gradient(rgba(255, 106, 213, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94, 231, 255, 0.05) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 50%, #1F0F33 0%, #0A0218 100%);
+  background-size: 28px 28px, 28px 28px, 100% 100%;
+  border-color: rgba(120, 73, 193, 0.5);
+}
+.aesthetic-vaporwave .bbox {
+  border-color: #FF6AD5;
+  box-shadow: 0 0 0 9999px rgba(8, 2, 24, 0.6), 0 0 24px rgba(255, 106, 213, 0.5);
+}
+.aesthetic-vaporwave .bbox-dim {
+  color: #FF6AD5;
+  background: rgba(31, 11, 51, 0.92);
+  border-color: rgba(255, 106, 213, 0.6);
+  font-family: 'Space Mono', monospace;
+}
+.aesthetic-vaporwave .bbox-handle {
+  background: linear-gradient(135deg, #FF3EAA, #C13584);
+  border-color: #FFEBFC;
+  box-shadow: 0 0 8px rgba(255, 62, 170, 0.7);
+}
+
+/* ── Callouts ────────────────────────────────────────────────── */
+.aesthetic-vaporwave .callout.red {
+  background: rgba(255, 62, 170, 0.14);
+  border-color: rgba(255, 130, 205, 0.55);
+  color: #FF7AC8;
+}
+.aesthetic-vaporwave .callout.gold {
+  background: rgba(255, 217, 61, 0.10);
+  border-color: rgba(255, 217, 61, 0.4);
+  color: #FFD93D;
+}
+.aesthetic-vaporwave .flag-reason {
+  background: rgba(15, 4, 28, 0.75);
+  border-color: rgba(255, 130, 205, 0.55);
+  color: #FFEBFC;
+}
+
+/* ── Scrollbar — vaporwave magenta ───────────────────────────── */
+.aesthetic-vaporwave *::-webkit-scrollbar-thumb {
+  background: rgba(120, 73, 193, 0.6);
+  background-clip: padding-box;
+}
+.aesthetic-vaporwave *::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 106, 213, 0.7);
+  background-clip: padding-box;
+}
+
+/* ── Selection ───────────────────────────────────────────────── */
+.aesthetic-vaporwave ::selection { background: rgba(255, 62, 170, 0.4); }
+
+/* ── Divider ─────────────────────────────────────────────────── */
+.aesthetic-vaporwave .divider-v,
+.aesthetic-vaporwave .divider { background: rgba(85, 52, 148, 0.5); }
+
+/* ── Settings button + dropdown — vaporwave extras ───────────── */
+.aesthetic-vaporwave .settings-btn {
+  background: rgba(57, 37, 96, 0.7);
+  border: 1px solid rgba(120, 73, 193, 0.5);
+  color: #D7B7EB;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.aesthetic-vaporwave .settings-btn:hover,
+.aesthetic-vaporwave .settings-btn.active {
+  border-color: #FF6AD5;
+  color: #FF6AD5;
+  box-shadow: 0 0 0 1px rgba(255, 106, 213, 0.3);
+  background: rgba(80, 50, 130, 0.85);
+}
+.aesthetic-vaporwave .settings-dropdown {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    0 0 0 1px rgba(255, 106, 213, 0.2),
+    0 20px 50px rgba(0, 0, 0, 0.7),
+    0 0 30px rgba(255, 62, 170, 0.12);
+}
+.aesthetic-vaporwave .sd-titlebar {
+  background: rgba(42, 26, 74, 0.8);
+  border-bottom-color: rgba(85, 52, 148, 0.6);
+}
+.aesthetic-vaporwave .sd-title { color: #5EE7FF; }
+.aesthetic-vaporwave .sd-close { color: #9C7BBE; }
+.aesthetic-vaporwave .sd-close:hover { color: #FF6AD5; background: rgba(80, 50, 130, 0.5); }
+.aesthetic-vaporwave .skin-card {
+  background: rgba(42, 26, 74, 0.6);
+  border-color: rgba(85, 52, 148, 0.5);
+}
+.aesthetic-vaporwave .skin-card.selected {
+  border-color: #FF6AD5;
+  background: rgba(60, 36, 100, 0.8);
+  box-shadow: 0 0 0 2px rgba(255, 106, 213, 0.25), 0 0 14px rgba(255, 106, 213, 0.2);
+}
+.aesthetic-vaporwave .skin-check { color: #5EFCC6; }
+.aesthetic-vaporwave .sd-toggle.on {
+  background: #FF3EAA;
+  border-color: #FF5EBE;
+  box-shadow: 0 0 8px rgba(255, 62, 170, 0.5);
+}
+.aesthetic-vaporwave .sd-thumb { background: #FFEBFC; }
+.aesthetic-vaporwave .sd-footer { border-top-color: rgba(85, 52, 148, 0.5); }
+.aesthetic-vaporwave .sd-divider { background: rgba(85, 52, 148, 0.5); }

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Runtime config
+.cryptogam_config.json
+
+# Local scratch / test output
+_smoketest_out/
+_now.json
+_state.json
+_boot.json
+_gitinfo.json
+_design/
+_design_readme.md
+*-PACKETS/
+
+# Sample image folders (don't commit specimen photos)
+input_images/
+output_packets/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

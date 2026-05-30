@@ -2,20 +2,25 @@
 """
 server.py  —  Cryptogam Digitizationizer 2000  ·  FastAPI backend
 ------------------------------------------------------------------
-Wraps the four core processing operations as HTTP endpoints.
-Designed to run locally (localhost:8000) so the frontend accesses
-local files without any upload/download overhead.
+Wraps the core processing operations as HTTP endpoints and serves the
+single-page web frontend (the design handoff) from the web/ folder.
+Runs locally (localhost:8000) so the frontend reads local files with no
+upload/download overhead.
 
-Endpoints
----------
-POST /api/preview       Detect packets in one image; return count + debug PNG
-POST /api/batch         Process all images in a directory (SSE stream)
-POST /api/fix           Re-segment or bisect a single oversized crop
-GET  /api/crops         List crop images in an output directory
+API endpoints
+-------------
+POST /api/preview   Detect packets in one image; return count + debug PNG
+POST /api/batch     Process all images in a directory (SSE progress stream)
+POST /api/fix       Re-segment or bisect a single oversized crop
+GET  /api/crops     List crop images in an output directory
+GET  /api/images    List source images in an input directory
+GET  /api/file      Stream a local image file (thumbnails / previews)
 
-Run directly:
-    python server.py
-    python launch.py        # also opens the browser
+Frontend
+--------
+GET  /              web/index.html + web/app/* (React-via-Babel, three skins)
+
+Run:  python server.py     or     python launch.py   (also opens the browser)
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import asyncio
 import base64
 import csv
 import json
+import mimetypes
 from pathlib import Path
 from typing import Optional
 
@@ -31,16 +37,23 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from segmenter_core import (
-    IMAGE_EXTS, MANIFEST_FIELDS, _OVERSIZE_THRESHOLD,
+    IMAGE_EXTS, MANIFEST_FIELDS,
     SegSettings, ImageResult,
-    _to_bgr8,
     segment_image, save_crops, flag_results,
     resegment_or_bisect, _auto_output_dir,
 )
+
+# Correct MIME types regardless of the host's Windows registry, which can
+# mis-map .css/.js to text/html or text/plain (strict browsers then reject).
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".jsx")  # Babel fetches as text
+
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -52,15 +65,11 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allow the dev frontend (Vite default: 5173, CRA default: 3000) to call us.
-# In production, lock this down to the actual frontend origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
+        "http://localhost:3000", "http://localhost:5173",
+        "http://127.0.0.1:3000", "http://127.0.0.1:5173",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,7 +81,6 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 class SegSettingsIn(BaseModel):
-    """Mirror of SegSettings as a Pydantic model for JSON request bodies."""
     top_crop_frac:       float = 0.0
     foreground:          str   = "light"
     threshold_mode:      str   = "otsu"
@@ -112,7 +120,7 @@ class FixRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helper: encode a BGR numpy array as a base64 PNG string
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _bgr_to_b64(bgr: np.ndarray) -> str:
@@ -124,10 +132,10 @@ def _bgr_to_b64(bgr: np.ndarray) -> str:
 
 def _result_to_dict(r: ImageResult) -> dict:
     return {
-        "path":       str(r.path),
-        "name":       r.path.name,
-        "count":      r.count,
-        "flag":       r.flag,
+        "path":        str(r.path),
+        "name":        r.path.name,
+        "count":       r.count,
+        "flag":        r.flag,
         "flag_detail": r.flag_detail,
         "crop_info": [
             {"path": str(p), "name": p.name, "w": w, "h": h}
@@ -140,33 +148,22 @@ def _result_to_dict(r: ImageResult) -> dict:
 # Endpoint 1: POST /api/preview
 # ---------------------------------------------------------------------------
 
-@app.post("/api/preview",
-          summary="Detect packets in one image",
-          tags=["Segmentation"])
+@app.post("/api/preview", summary="Detect packets in one image", tags=["Segmentation"])
 async def preview(req: PreviewRequest):
-    """
-    Run packet detection on a single local image file.
-
-    Returns the detection count, the debug image (bounding boxes drawn)
-    as a base64-encoded PNG, and the foreground mode that was used.
-    No files are written.
-    """
+    """Run detection on one local image; return count + base64 debug PNG. No files written."""
     path = Path(req.image_path)
     if not path.is_file():
         raise HTTPException(404, f"Image not found: {path}")
-
     try:
         dets, debug_bgr, fg, top_px = await asyncio.to_thread(
-            segment_image, path, req.settings.to_core()
-        )
+            segment_image, path, req.settings.to_core())
     except Exception as exc:
         raise HTTPException(422, str(exc))
-
     return {
-        "count":      len(dets),
-        "foreground": fg,
+        "count":       len(dets),
+        "foreground":  fg,
         "top_crop_px": top_px,
-        "debug_b64":  _bgr_to_b64(debug_bgr),
+        "debug_b64":   _bgr_to_b64(debug_bgr),
     }
 
 
@@ -174,31 +171,19 @@ async def preview(req: PreviewRequest):
 # Endpoint 2: POST /api/batch  (Server-Sent Events stream)
 # ---------------------------------------------------------------------------
 
-@app.post("/api/batch",
-          summary="Process all images in a directory (SSE)",
-          tags=["Segmentation"])
+@app.post("/api/batch", summary="Process all images in a directory (SSE)", tags=["Segmentation"])
 async def batch(req: BatchRequest):
     """
-    Segment every image in *input_dir*, write crops to *output_dir*
-    (auto-generated dated sub-folder when omitted), and apply QC flagging.
-
-    **Streams Server-Sent Events** so the browser can update a progress bar
-    in real time.  Event shapes:
-
-    ```
-    { "type": "start",    "total": N, "output_dir": "..." }
-    { "type": "progress", "i": N, "total": N, "name": "...", "count": N }
-    { "type": "error",    "i": N, "total": N, "name": "...", "error": "..." }
-    { "type": "done",     "ok": N, "total": N,
-                          "flagged": [...], "manifest": "path/to/csv" }
-    ```
+    Segment every image in input_dir, write crops to output_dir (auto-dated
+    sub-folder if omitted), apply QC flagging. Streams SSE events:
+      start | progress | error | done
     """
     in_dir = Path(req.input_dir)
     if not in_dir.is_dir():
         raise HTTPException(404, f"Input directory not found: {in_dir}")
 
     out_dir = Path(req.output_dir) if req.output_dir else _auto_output_dir(in_dir)
-    s       = req.settings.to_core()
+    s = req.settings.to_core()
 
     images = sorted(
         p for p in in_dir.iterdir()
@@ -210,37 +195,23 @@ async def batch(req: BatchRequest):
     async def event_stream():
         out_dir.mkdir(parents=True, exist_ok=True)
         manifest_rows: list[dict] = []
-        results:       list[ImageResult] = []
+        results: list[ImageResult] = []
         total = len(images)
 
-        yield f"data: {json.dumps({'type': 'start', 'total': total, 'output_dir': str(out_dir)})}\n\n"
+        yield f"data: {json.dumps({'type':'start','total':total,'output_dir':str(out_dir)})}\n\n"
 
         for i, img_path in enumerate(images, 1):
             name = img_path.name
             try:
                 count, _debug, crop_info = await asyncio.to_thread(
-                    save_crops, img_path, out_dir, s, manifest_rows
-                )
-                results.append(ImageResult(path=img_path, count=count,
-                                           crop_info=crop_info))
-                event = {
-                    "type": "progress",
-                    "i": i, "total": total,
-                    "name": name,
-                    "count": count,
-                }
+                    save_crops, img_path, out_dir, s, manifest_rows)
+                results.append(ImageResult(path=img_path, count=count, crop_info=crop_info))
+                evt = {"type": "progress", "i": i, "total": total, "name": name, "count": count}
             except Exception as exc:
                 results.append(ImageResult(path=img_path, count=0, flag="none"))
-                event = {
-                    "type": "error",
-                    "i": i, "total": total,
-                    "name": name,
-                    "error": str(exc),
-                }
+                evt = {"type": "error", "i": i, "total": total, "name": name, "error": str(exc)}
+            yield f"data: {json.dumps(evt)}\n\n"
 
-            yield f"data: {json.dumps(event)}\n\n"
-
-        # Write manifest CSV
         manifest_path = out_dir / "packet_manifest.csv"
         try:
             with manifest_path.open("w", newline="", encoding="utf-8") as f:
@@ -248,60 +219,43 @@ async def batch(req: BatchRequest):
                 writer.writeheader()
                 writer.writerows(manifest_rows)
         except Exception:
-            manifest_path = Path("")  # non-fatal
+            manifest_path = Path("")
 
-        # Flag results
         flagged = [r for r in flag_results(results) if r.flag]
-        ok      = len(results) - len(flagged)
-
-        done_event = {
-            "type":     "done",
-            "ok":        ok,
-            "total":     total,
-            "manifest":  str(manifest_path),
-            "flagged":  [_result_to_dict(r) for r in flagged],
+        ok = len(results) - len(flagged)
+        done = {
+            "type": "done", "ok": ok, "total": total,
+            "manifest": str(manifest_path),
+            "flagged": [_result_to_dict(r) for r in flagged],
         }
-        yield f"data: {json.dumps(done_event)}\n\n"
+        yield f"data: {json.dumps(done)}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache",
-                                      "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------
 # Endpoint 3: POST /api/fix
 # ---------------------------------------------------------------------------
 
-@app.post("/api/fix",
-          summary="Re-segment or bisect an oversized crop",
-          tags=["Segmentation"])
+@app.post("/api/fix", summary="Re-segment or bisect an oversized crop", tags=["Segmentation"])
 async def fix(req: FixRequest):
-    """
-    Attempt to split a merged-packet crop into individual outputs.
-
-    Tries re-segmentation first; falls back to a geometric bisect.
-    The original crop file is deleted on success.
-
-    Returns the new file paths and a short description of what was done.
-    """
+    """Split a merged-packet crop. Tries re-segmentation, falls back to bisect. Deletes original on success."""
     crop_path  = Path(req.crop_path)
     output_dir = Path(req.output_dir)
-
     if not crop_path.is_file():
         raise HTTPException(404, f"Crop not found: {crop_path}")
     if not output_dir.is_dir():
         raise HTTPException(404, f"Output directory not found: {output_dir}")
-
     try:
         new_paths, description = await asyncio.to_thread(
-            resegment_or_bisect, crop_path, output_dir, req.settings.to_core()
-        )
+            resegment_or_bisect, crop_path, output_dir, req.settings.to_core())
     except Exception as exc:
         raise HTTPException(422, str(exc))
-
     return {
-        "new_paths":   [str(p) for p in new_paths],
-        "new_names":   [p.name for p in new_paths],
+        "new_paths": [str(p) for p in new_paths],
+        "new_names": [p.name for p in new_paths],
         "description": description,
     }
 
@@ -310,42 +264,79 @@ async def fix(req: FixRequest):
 # Endpoint 4: GET /api/crops
 # ---------------------------------------------------------------------------
 
-@app.get("/api/crops",
-         summary="List crop images in an output directory",
-         tags=["Gallery"])
+@app.get("/api/crops", summary="List crop images in an output directory", tags=["Gallery"])
 async def list_crops(output_dir: str = Query(..., description="Path to crops folder")):
-    """
-    Return metadata for every image file in *output_dir*, sorted by name.
-    Used by the QC gallery to populate thumbnail cards.
-    """
+    """Metadata for every image in output_dir, sorted by name. Populates the QC gallery."""
     d = Path(output_dir)
     if not d.is_dir():
         raise HTTPException(404, f"Directory not found: {d}")
-
     crops = sorted(
         p for p in d.iterdir()
         if p.is_file() and p.suffix.lower() in IMAGE_EXTS
     )
     return {
         "output_dir": str(d),
-        "count":      len(crops),
+        "count": len(crops),
         "crops": [
-            {
-                "path":       str(p),
-                "name":       p.name,
-                "stem":       p.stem,
-                "size_bytes": p.stat().st_size,
-            }
+            {"path": str(p), "name": p.name, "stem": p.stem, "size_bytes": p.stat().st_size}
             for p in crops
         ],
     }
 
 
 # ---------------------------------------------------------------------------
-# Dev server entry point (also invoked by launch.py)
+# Endpoint 5: GET /api/images
+# ---------------------------------------------------------------------------
+
+@app.get("/api/images", summary="List source images in an input directory", tags=["Segmentation"])
+async def list_images(input_dir: str = Query(..., description="Path to source image folder")):
+    """Metadata for every image in input_dir. Used to pick the preview image and count a batch."""
+    d = Path(input_dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"Directory not found: {d}")
+    images = sorted(
+        p for p in d.iterdir()
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+    )
+    return {
+        "input_dir": str(d),
+        "count": len(images),
+        "images": [{"path": str(p), "name": p.name, "stem": p.stem} for p in images],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoint 6: GET /api/file  — stream a local image file to the browser
+# ---------------------------------------------------------------------------
+
+@app.get("/api/file", summary="Serve a local image file", tags=["Gallery"])
+async def serve_file(path: str = Query(..., description="Absolute path to an image file")):
+    """
+    Stream one image file from disk for thumbnails / previews. Restricted to
+    image extensions. NOTE: localhost single-user tool; restrict to an output
+    root if this ever becomes a hosted multi-user service.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(404, f"File not found: {p}")
+    if p.suffix.lower() not in IMAGE_EXTS:
+        raise HTTPException(415, f"Not an image file: {p.name}")
+    return FileResponse(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Static frontend  (mounted AFTER all /api routes so it doesn't shadow them)
+# ---------------------------------------------------------------------------
+
+_WEB_DIR = Path(__file__).parent / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_WEB_DIR), html=True), name="frontend")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True,
-                log_level="info")
+    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True, log_level="info")

@@ -1,0 +1,747 @@
+/* ─────────────────────────────────────────────────────────────
+   Cryptogam Digitizationizer 2000 — RETRO '95 SKIN  (DRAFT)
+   Reference: warm 90s OS aesthetic — parchment panels, thick
+   brown outlines, hard offset shadows, rainbow sliders, folder
+   tabs, and a friendly Nunito + Courier Prime type pair.
+   DRAFT — purely informs future visual direction.
+   ───────────────────────────────────────────────────────────── */
+
+/* ── Google Fonts preconnect handled by the HTML <link> ──────── */
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Courier+Prime:wght@400;700&display=swap');
+
+.aesthetic-retro95 {
+  /* ── Palette ─────────────────────────────────────────────── */
+  --bg:          #EDD9B8;   /* warm parchment */
+  --surface-1:   #FAF3E6;   /* cream panels */
+  --surface-2:   #F5EDD8;   /* cards / rows */
+  --surface-3:   #EEE2C6;   /* hover / elevated */
+  --well:        #F0E8D5;   /* inputs / log / wells */
+  --border:      #2C1810;   /* dark brown — outlines */
+  --border-2:    #5A3020;   /* mid brown */
+  --border-3:    #8B5A38;   /* warm tan */
+
+  /* ── Text ───────────────────────────────────────────────── */
+  --text:        #1A0E08;
+  --text-2:      #3D2418;
+  --text-3:      #7A5030;
+  --text-4:      #B08060;
+
+  /* ── Coral / terracotta — primary (was U of G red) ──────── */
+  --red:         #E76F51;
+  --red-hover:   #D4583C;
+  --red-bright:  #C84030;
+  --red-soft:    rgba(231, 111, 81, 0.15);
+  --red-line:    rgba(231, 111, 81, 0.55);
+
+  /* ── Sage green — approved / complete ───────────────────── */
+  --green:       #5E9E5A;
+  --green-mid:   #3D7A3A;
+  --green-deep:  #1D4A1C;
+  --green-soft:  rgba(94, 158, 90, 0.14);
+  --green-line:  rgba(94, 158, 90, 0.55);
+
+  /* ── Sky blue — in-progress ─────────────────────────────── */
+  --blue:        #5BA8D4;
+  --blue-soft:   rgba(91, 168, 212, 0.14);
+
+  /* ── Sunshine yellow — warning ──────────────────────────── */
+  --gold:        #F9B02A;
+  --gold-soft:   rgba(249, 176, 42, 0.15);
+
+  /* ── Annotation — coral dashed (matches primary) ────────── */
+  --anno:        #E76F51;
+  --anno-bg:     #FFF5EC;
+
+  /* ── Type ───────────────────────────────────────────────── */
+  --serif: 'Nunito', 'Source Sans 3', sans-serif;
+  --sans:  'Nunito', system-ui, sans-serif;
+  --mono:  'Courier Prime', 'IBM Plex Mono', ui-monospace, monospace;
+
+  --bb-font: 'Courier Prime', monospace;
+
+  /* ── Shape tokens ───────────────────────────────────────── */
+  --radius:    10px;
+  --radius-sm:  6px;
+  --radius-lg: 12px;
+
+  /* ── Hard shadow (no blur — graphic "sticker" feel) ──────── */
+  --hard-shadow: 4px 5px 0 #2C1810;
+  --hard-shadow-sm: 2px 3px 0 #2C1810;
+}
+
+/* ── Global background ───────────────────────────────────────── */
+.aesthetic-retro95 {
+  background: #EDD9B8;
+}
+
+/* ── Topbar — apricot title bar ──────────────────────────────── */
+.aesthetic-retro95 .topbar {
+  background: #F4A261;
+  border-bottom: 2.5px solid #2C1810;
+  box-shadow: 0 3px 0 #2C1810;
+  position: sticky;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.aesthetic-retro95 .brand .fern g { stroke: #2C1810; }
+.aesthetic-retro95 .brand-uni {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 900;
+  font-size: 9px;
+  color: rgba(44, 24, 16, 0.65);
+  letter-spacing: 0.18em;
+}
+.aesthetic-retro95 .brand-app {
+  font-family: 'Nunito', sans-serif;
+  font-size: 17px;
+  font-weight: 900;
+  color: #2C1810;
+  letter-spacing: -0.01em;
+  -webkit-text-fill-color: unset;
+  background: none;
+  text-shadow: 1px 1px 0 rgba(255,255,255,0.4);
+  animation: none;
+}
+.aesthetic-retro95 .brand-app .ver {
+  font-family: 'Courier Prime', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(44, 24, 16, 0.6);
+  -webkit-text-fill-color: unset;
+  margin-left: 4px;
+}
+.aesthetic-retro95 .topbar-meta {
+  font-family: 'Courier Prime', monospace;
+  color: rgba(44, 24, 16, 0.65);
+}
+.aesthetic-retro95 .topbar-meta .dot {
+  background: #5E9E5A;
+  box-shadow: 0 0 0 1.5px #2C1810;
+}
+
+/* ── Tabs — folder tab style ─────────────────────────────────── */
+.aesthetic-retro95 .tabs {
+  background: #E0C898;
+  border-bottom: 2.5px solid #2C1810;
+  padding: 0 18px;
+  gap: 4px;
+  align-items: flex-end;
+}
+.aesthetic-retro95 .tab {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  font-size: 12.5px;
+  border-radius: 8px 8px 0 0;
+  border: 2px solid #2C1810;
+  border-bottom: none;
+  background: #D4B888;
+  color: #5A3020;
+  padding: 7px 16px 9px;
+  margin-bottom: -2.5px;
+  position: relative;
+  z-index: 0;
+  letter-spacing: 0.01em;
+  transition: background .12s;
+}
+.aesthetic-retro95 .tab:hover { background: #E8D0A0; color: #2C1810; }
+.aesthetic-retro95 .tab.active {
+  background: #FAF3E6;
+  color: #2C1810;
+  z-index: 2;
+  border-bottom: 2.5px solid #FAF3E6;
+}
+.aesthetic-retro95 .tab .tnum {
+  font-family: 'Courier Prime', monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #B08060;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-right: 6px;
+}
+.aesthetic-retro95 .tab.active .tnum { color: #8B5A38; }
+
+/* ── Screen header ───────────────────────────────────────────── */
+.aesthetic-retro95 .screen { background: #EDD9B8; }
+.aesthetic-retro95 .screen-head { border-bottom: 2px solid #C4A87E; }
+.aesthetic-retro95 .screen-kicker {
+  font-family: 'Courier Prime', monospace;
+  color: #B08060;
+  letter-spacing: 0.14em;
+}
+.aesthetic-retro95 .screen-title {
+  font-family: 'Nunito', sans-serif;
+  font-size: 24px;
+  font-weight: 900;
+  color: #2C1810;
+  letter-spacing: -0.01em;
+}
+.aesthetic-retro95 .screen-sub {
+  font-family: 'Nunito', sans-serif;
+  color: #7A5030;
+}
+
+/* ── Panels — cream with thick border + hard offset shadow ───── */
+.aesthetic-retro95 .panel {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--hard-shadow);
+  position: relative;
+}
+/* Mac-OS-9-style traffic-light dots on every panel header */
+.aesthetic-retro95 .panel-head {
+  background: #F4A261;
+  border-bottom: 2.5px solid #2C1810;
+  border-radius: calc(var(--radius-lg) - 2px) calc(var(--radius-lg) - 2px) 0 0;
+  position: relative;
+  padding-right: 64px;
+}
+.aesthetic-retro95 .panel-head::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #E76F51;
+  border: 1.5px solid #2C1810;
+  /* yellow dot + green dot via box-shadow */
+  box-shadow:
+    -14px 0 0 1.5px #2C1810,
+    -14px 0 0 0   #F9B02A,
+    -28px 0 0 1.5px #2C1810,
+    -28px 0 0 0   #5E9E5A;
+  pointer-events: none;
+}
+.aesthetic-retro95 .panel-title {
+  font-family: 'Courier Prime', monospace;
+  font-weight: 700;
+  font-size: 11px;
+  color: #2C1810;
+  letter-spacing: 0.12em;
+  text-shadow: none;
+}
+
+/* ── Buttons — chunky pill with hard shadow ──────────────────── */
+.aesthetic-retro95 .btn {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  font-size: 12.5px;
+  border-radius: 100px;
+  border: 2px solid #2C1810;
+  background: #FAF3E6;
+  color: #2C1810;
+  box-shadow: var(--hard-shadow-sm);
+  transition: box-shadow .08s, transform .08s, background .1s;
+  letter-spacing: 0.01em;
+}
+.aesthetic-retro95 .btn:hover {
+  background: #EEE2C6;
+  box-shadow: 3px 4px 0 #2C1810;
+  transform: translate(-1px, -1px);
+}
+.aesthetic-retro95 .btn:active {
+  box-shadow: none;
+  transform: translate(2px, 3px);
+}
+
+.aesthetic-retro95 .btn-primary {
+  background: #E76F51;
+  color: #fff;
+  border-color: #2C1810;
+  text-shadow: 0 1px 0 rgba(44, 24, 16, 0.3);
+  box-shadow: var(--hard-shadow-sm);
+}
+.aesthetic-retro95 .btn-primary:hover {
+  background: #D4583C;
+  color: #fff;
+  box-shadow: 3px 4px 0 #2C1810;
+  transform: translate(-1px, -1px);
+  border-color: #2C1810;
+}
+.aesthetic-retro95 .btn-primary:active {
+  box-shadow: none;
+  transform: translate(2px, 3px);
+}
+
+.aesthetic-retro95 .btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: #7A5030;
+}
+.aesthetic-retro95 .btn-ghost:hover {
+  background: rgba(44, 24, 16, 0.06);
+  box-shadow: none;
+  transform: none;
+  color: #2C1810;
+}
+
+/* ── Inputs / labels ─────────────────────────────────────────── */
+.aesthetic-retro95 .input {
+  background: #FFF8F0;
+  border: 2px solid #2C1810;
+  border-radius: var(--radius-sm);
+  color: #1A0E08;
+  font-family: 'Courier Prime', monospace;
+  box-shadow: inset 1px 2px 0 rgba(44, 24, 16, 0.08);
+}
+.aesthetic-retro95 .input::placeholder { color: #B08060; }
+.aesthetic-retro95 .input:focus {
+  border-color: #E76F51;
+  box-shadow: inset 1px 2px 0 rgba(44,24,16,0.08), 0 0 0 3px rgba(231,111,81,0.22);
+  outline: none;
+}
+.aesthetic-retro95 .input.sans { font-family: 'Nunito', sans-serif; }
+
+.aesthetic-retro95 .label {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  color: #5A3020;
+  letter-spacing: 0.08em;
+}
+
+/* Stepper */
+.aesthetic-retro95 .stepper button {
+  background: #FAF3E6;
+  border: 2px solid #2C1810;
+  color: #2C1810;
+  font-weight: 700;
+  box-shadow: var(--hard-shadow-sm);
+}
+.aesthetic-retro95 .stepper button:first-child { border-radius: 100px 0 0 100px; }
+.aesthetic-retro95 .stepper button:last-child  { border-radius: 0 100px 100px 0; }
+.aesthetic-retro95 .stepper button:hover { background: #EEE2C6; }
+.aesthetic-retro95 .stepper button:active { box-shadow: none; transform: translate(2px,3px); }
+.aesthetic-retro95 .stepper input {
+  border-top: 2px solid #2C1810;
+  border-bottom: 2px solid #2C1810;
+  border-left: none; border-right: none;
+  box-shadow: none;
+  border-radius: 0;
+  font-family: 'Courier Prime', monospace;
+  background: #FFF8F0;
+}
+
+/* Segmented toggle */
+.aesthetic-retro95 .seg {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  border-radius: 100px;
+  box-shadow: var(--hard-shadow-sm);
+  padding: 2px;
+}
+.aesthetic-retro95 .seg button {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  color: #7A5030;
+  border-radius: 100px;
+}
+.aesthetic-retro95 .seg button:hover { color: #2C1810; background: rgba(44,24,16,0.06); }
+.aesthetic-retro95 .seg button.on {
+  background: #FAF3E6;
+  color: #2C1810;
+  box-shadow: inset 0 0 0 1.5px #2C1810;
+}
+
+/* ── Sliders — rainbow gradient track ────────────────────────── */
+.aesthetic-retro95 .slider {
+  height: 6px;
+  background: linear-gradient(90deg,
+    #FF6B6B 0%, #FF9E3D 20%, #F9D166 40%,
+    #73D483 60%, #5BA8D4 80%, #A78BFA 100%);
+  border-radius: 100px;
+  border: 1.5px solid #2C1810;
+}
+.aesthetic-retro95 .slider::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  box-shadow: 1px 2px 0 #2C1810;
+  cursor: pointer;
+}
+.aesthetic-retro95 .slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  box-shadow: 1px 2px 0 #2C1810;
+  cursor: pointer;
+}
+
+/* ── Pills ───────────────────────────────────────────────────── */
+.aesthetic-retro95 .pill {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 800;
+  border-radius: 100px;
+  border: 1.5px solid #2C1810;
+}
+.aesthetic-retro95 .pill.green { background: #C8E8C8; color: #1D4A1C; border-color: #2C1810; }
+.aesthetic-retro95 .pill.red   { background: #F5CABA; color: #8B2010; border-color: #2C1810; }
+.aesthetic-retro95 .pill.blue  { background: #C0DDEF; color: #1A4A6A; border-color: #2C1810; }
+.aesthetic-retro95 .pill.gold  { background: #FAECC0; color: #7A4A10; border-color: #2C1810; }
+
+/* ── Activity log — cream with Courier Prime ─────────────────── */
+.aesthetic-retro95 .log {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  box-shadow: var(--hard-shadow);
+  border-radius: var(--radius-lg);
+}
+.aesthetic-retro95 .log-head {
+  background: #5BA8D4;
+  border-bottom: 2.5px solid #2C1810;
+  border-radius: calc(var(--radius-lg) - 2px) calc(var(--radius-lg) - 2px) 0 0;
+}
+.aesthetic-retro95 .panel-title,
+.aesthetic-retro95 .log-head .panel-title { color: #1A0E08; }
+.aesthetic-retro95 .log-body {
+  background: #FFF8F0;
+  font-family: 'Courier Prime', monospace;
+  font-size: 12px;
+  color: #1A0E08;
+}
+.aesthetic-retro95 .log-t   { color: #B08060; }
+.aesthetic-retro95 .log-m   { color: #3D2418; }
+.aesthetic-retro95 .log-lvl.ok   { color: #3D7A3A; }
+.aesthetic-retro95 .log-lvl.warn { color: #B07010; }
+.aesthetic-retro95 .log-lvl.err  { color: #C84030; }
+.aesthetic-retro95 .log-lvl.info { color: #5A3020; }
+.aesthetic-retro95 .caret        { color: #3D7A3A; }
+
+/* ── ScanPreview — light parchment + bbox in warm tones ──────── */
+.aesthetic-retro95 .scan-photo {
+  background:
+    repeating-linear-gradient(0deg,   transparent, transparent 27px, rgba(44,24,16,0.04) 27px, rgba(44,24,16,0.04) 28px),
+    repeating-linear-gradient(90deg,  transparent, transparent 27px, rgba(44,24,16,0.04) 27px, rgba(44,24,16,0.04) 28px),
+    #F0E8D5;
+  border: 2px solid #2C1810;
+  border-radius: var(--radius-sm);
+}
+.aesthetic-retro95 .scan-label {
+  font-family: 'Courier Prime', monospace;
+  color: #B08060;
+}
+.aesthetic-retro95 .ph-tag {
+  background: #FAF3E6;
+  border: 1.5px solid #2C1810;
+  color: #2C1810;
+  font-family: 'Courier Prime', monospace;
+  box-shadow: 1px 2px 0 #2C1810;
+}
+
+/* Bounding box overrides */
+.aesthetic-retro95 .bb-ok     polygon { stroke: #5E9E5A; fill: rgba(94,158,90,0.10); }
+.aesthetic-retro95 .bb-ok     text    { fill: #3D7A3A; }
+.aesthetic-retro95 .bb-red    polygon { stroke: #C84030; fill: rgba(200,64,48,0.12); }
+.aesthetic-retro95 .bb-red    text    { fill: #C84030; }
+.aesthetic-retro95 .bb-gold   polygon { stroke: #B07010; fill: rgba(176,112,16,0.12); }
+.aesthetic-retro95 .bb-gold   text    { fill: #B07010; }
+.aesthetic-retro95 .bb-active polygon {
+  stroke: #E76F51; fill: rgba(231,111,81,0.18); stroke-width: 2.5;
+}
+.aesthetic-retro95 .bb-active text    { fill: #E76F51; }
+
+/* ── Filter chips / toolbar ──────────────────────────────────── */
+.aesthetic-retro95 .filterbar {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  border-radius: 100px;
+  box-shadow: var(--hard-shadow-sm);
+  padding: 3px;
+}
+.aesthetic-retro95 .fchip {
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  color: #7A5030;
+  border-radius: 100px;
+}
+.aesthetic-retro95 .fchip:hover { color: #2C1810; background: rgba(44,24,16,0.06); }
+.aesthetic-retro95 .fchip.on {
+  background: #FAF3E6;
+  color: #2C1810;
+  box-shadow: inset 0 0 0 1.5px #2C1810;
+}
+
+/* ── QC thumbnails ───────────────────────────────────────────── */
+.aesthetic-retro95 .qc-grid-wrap {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  box-shadow: var(--hard-shadow);
+  border-radius: var(--radius-lg);
+}
+.aesthetic-retro95 .thumb {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  border-radius: var(--radius-sm);
+  box-shadow: 2px 2px 0 #2C1810;
+  transition: box-shadow .08s, transform .08s;
+}
+.aesthetic-retro95 .thumb:hover {
+  transform: translate(-1px,-1px);
+  box-shadow: 3px 3px 0 #2C1810;
+}
+.aesthetic-retro95 .thumb.sel {
+  border-color: #E76F51;
+  box-shadow: 3px 3px 0 #E76F51;
+  transform: translate(-1px,-1px);
+}
+.aesthetic-retro95 .thumb.green { border-left: 3.5px solid #5E9E5A; }
+.aesthetic-retro95 .thumb.red   { border-left: 3.5px solid #C84030; }
+.aesthetic-retro95 .thumb.gold  { border-left: 3.5px solid #B07010; }
+.aesthetic-retro95 .sdot.green   { background: #5E9E5A; }
+.aesthetic-retro95 .sdot.red     { background: #C84030; }
+.aesthetic-retro95 .sdot.gold    { background: #B07010; }
+.aesthetic-retro95 .sdot.neutral { background: #B08060; }
+.aesthetic-retro95 .thumb-foot { border-top: 1.5px solid #C4A87E; }
+.aesthetic-retro95 .thumb-foot .mono { font-family: 'Courier Prime', monospace; color: #7A5030; }
+.aesthetic-retro95 .mk { color: #7A5030; font-family: 'Nunito', sans-serif; }
+.aesthetic-retro95 .mv { color: #1A0E08; font-family: 'Courier Prime', monospace; }
+
+/* ── Config strip + adv panel ────────────────────────────────── */
+.aesthetic-retro95 .config-strip {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--hard-shadow);
+}
+.aesthetic-retro95 .adv-panel {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  border-radius: var(--radius);
+  box-shadow: var(--hard-shadow);
+}
+.aesthetic-retro95 .adv-panel-title {
+  font-family: 'Courier Prime', monospace;
+  color: #5A3020;
+  border-bottom: 1.5px solid #C4A87E;
+}
+
+/* ── Redraw boundary editor ──────────────────────────────────── */
+.aesthetic-retro95 .editor-canvas {
+  background:
+    repeating-linear-gradient(0deg,   transparent, transparent 27px, rgba(44,24,16,0.04) 27px, rgba(44,24,16,0.04) 28px),
+    repeating-linear-gradient(90deg,  transparent, transparent 27px, rgba(44,24,16,0.04) 27px, rgba(44,24,16,0.04) 28px),
+    #F0E8D5;
+  border: 2.5px solid #2C1810;
+}
+.aesthetic-retro95 .bbox {
+  border: 3px solid #E76F51;
+  box-shadow: 0 0 0 9999px rgba(237,217,184,0.55), 3px 4px 0 #2C1810;
+}
+.aesthetic-retro95 .bbox-dim {
+  color: #2C1810;
+  background: #FAF3E6;
+  border: 2px solid #2C1810;
+  font-family: 'Courier Prime', monospace;
+  box-shadow: 1px 2px 0 #2C1810;
+}
+.aesthetic-retro95 .bbox-handle {
+  background: #E76F51;
+  border: 2px solid #2C1810;
+  box-shadow: 1px 2px 0 #2C1810;
+  border-radius: 3px;
+}
+
+/* ── Callouts ────────────────────────────────────────────────── */
+.aesthetic-retro95 .callout.red {
+  background: #F8DDD5;
+  border-color: #C84030;
+  color: #8B2010;
+  border-radius: var(--radius-sm);
+}
+.aesthetic-retro95 .callout.gold {
+  background: #FAF0CC;
+  border-color: #B07010;
+  color: #7A4A10;
+  border-radius: var(--radius-sm);
+}
+.aesthetic-retro95 .flag-reason {
+  background: #FFF8F0;
+  border: 2px solid #C84030;
+  color: #1A0E08;
+  font-family: 'Courier Prime', monospace;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Annotation overlay ──────────────────────────────────────── */
+.aesthetic-retro95.anno-on .region::after {
+  border-color: #E76F51;
+  border-style: dashed;
+  opacity: 0.85;
+}
+.aesthetic-retro95 .anno-label,
+.aesthetic-retro95 .anno-note {
+  background: #FFF8F0;
+  border: 2px solid #E76F51;
+  color: #1A0E08;
+  font-family: 'Courier Prime', monospace;
+  box-shadow: 2px 2px 0 #2C1810;
+}
+.aesthetic-retro95 .anno-label .num {
+  color: #fff;
+  background: #E76F51;
+}
+
+/* ── Submission / progress ───────────────────────────────────── */
+.aesthetic-retro95 .progress-track {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  border-radius: 100px;
+  box-shadow: inset 1px 2px 0 rgba(44,24,16,0.1);
+}
+.aesthetic-retro95 .progress-seg.green {
+  background: linear-gradient(90deg, #73D483, #5E9E5A);
+}
+.aesthetic-retro95 .progress-seg.blue {
+  background: linear-gradient(90deg, #7EC8E8, #5BA8D4);
+}
+.aesthetic-retro95 .progress-seg.red {
+  background: linear-gradient(90deg, #F5A888, #E76F51);
+}
+.aesthetic-retro95 .submit-top {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  box-shadow: var(--hard-shadow);
+  border-radius: var(--radius-lg);
+}
+.aesthetic-retro95 .subrow { border-bottom: 1.5px solid #D4B888; }
+.aesthetic-retro95 .subrow.error { background: rgba(231,111,81,0.09); }
+.aesthetic-retro95 .subtable-head {
+  color: #7A5030;
+  font-family: 'Courier Prime', monospace;
+  border-bottom: 2px solid #C4A87E;
+}
+.aesthetic-retro95 .ts-sci { color: #1A0E08; font-family: 'Nunito', sans-serif; font-weight: 800; font-style: normal; }
+.aesthetic-retro95 .ts-meta { color: #7A5030; }
+
+/* ── Placeholder / empty states ──────────────────────────────── */
+.aesthetic-retro95 .ph {
+  background-color: #EEE2C6;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0, transparent 6px,
+    rgba(44,24,16,0.045) 6px, rgba(44,24,16,0.045) 12px
+  );
+  border: 2px solid #C4A87E;
+}
+.aesthetic-retro95 .ph-label {
+  color: #B08060;
+  font-family: 'Courier Prime', monospace;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────── */
+.aesthetic-retro95 *::-webkit-scrollbar-track { background: #EEE2C6; }
+.aesthetic-retro95 *::-webkit-scrollbar-thumb {
+  background: #B08060;
+  border: 1.5px solid #2C1810;
+  background-clip: padding-box;
+}
+.aesthetic-retro95 *::-webkit-scrollbar-thumb:hover {
+  background: #8B5A38;
+  background-clip: padding-box;
+}
+
+/* ── Selection ───────────────────────────────────────────────── */
+.aesthetic-retro95 ::selection { background: rgba(231,111,81,0.3); }
+
+/* ── Dividers ────────────────────────────────────────────────── */
+.aesthetic-retro95 .divider-v,
+.aesthetic-retro95 .divider { background: #C4A87E; }
+
+/* ── Hint text ───────────────────────────────────────────────── */
+.aesthetic-retro95 .hint { color: #7A5030; font-family: 'Nunito', sans-serif; }
+.aesthetic-retro95 .mono { font-family: 'Courier Prime', monospace; }
+.aesthetic-retro95 .kbd {
+  font-family: 'Courier Prime', monospace;
+  font-weight: 700;
+  background: #FAF3E6;
+  border: 2px solid #2C1810;
+  box-shadow: 1px 2px 0 #2C1810;
+  color: #2C1810;
+}
+
+/* ── Settings dropdown — retro style ────────────────────────── */
+.aesthetic-retro95 .settings-btn {
+  border-radius: 100px;
+  border: 2px solid #2C1810;
+  background: #FAF3E6;
+  color: #2C1810;
+  box-shadow: var(--hard-shadow-sm);
+}
+.aesthetic-retro95 .settings-btn:hover {
+  background: #EEE2C6;
+  box-shadow: 3px 4px 0 #2C1810;
+  transform: translate(-1px, -1px);
+  border-color: #2C1810;
+  color: #2C1810;
+}
+.aesthetic-retro95 .settings-dropdown {
+  background: #FAF3E6;
+  border: 2.5px solid #2C1810;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--hard-shadow);
+}
+.aesthetic-retro95 .sd-titlebar {
+  background: #F9B02A;
+  border-bottom: 2.5px solid #2C1810;
+  border-radius: calc(var(--radius-lg) - 2px) calc(var(--radius-lg) - 2px) 0 0;
+}
+.aesthetic-retro95 .sd-title {
+  font-family: 'Courier Prime', monospace;
+  font-weight: 700;
+  color: #2C1810;
+}
+.aesthetic-retro95 .sd-close {
+  color: #2C1810;
+  font-size: 13px;
+}
+.aesthetic-retro95 .sd-section-label {
+  font-family: 'Courier Prime', monospace;
+  font-weight: 700;
+  color: #5A3020;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+}
+.aesthetic-retro95 .sd-label { font-family: 'Nunito', sans-serif; color: #3D2418; }
+.aesthetic-retro95 .sd-val   { font-family: 'Courier Prime', monospace; color: #2C1810; }
+.aesthetic-retro95 .sd-hint  { color: #B08060; font-family: 'Nunito', sans-serif; }
+.aesthetic-retro95 .sd-toggle {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  box-shadow: 1px 2px 0 #2C1810;
+}
+.aesthetic-retro95 .sd-toggle.on {
+  background: #E76F51;
+}
+.aesthetic-retro95 .sd-thumb {
+  background: #FAF3E6;
+  border: 2px solid #2C1810;
+}
+.aesthetic-retro95 .skin-card {
+  background: #EEE2C6;
+  border: 2px solid #2C1810;
+  border-radius: var(--radius-sm);
+  box-shadow: 2px 2px 0 #2C1810;
+}
+.aesthetic-retro95 .skin-card.selected {
+  background: #FAF3E6;
+  border-color: #E76F51;
+  box-shadow: 2px 2px 0 #E76F51;
+}
+.aesthetic-retro95 .skin-card:hover {
+  transform: translate(-1px,-1px);
+  box-shadow: 3px 3px 0 #2C1810;
+}
+.aesthetic-retro95 .skin-name { font-family: 'Nunito', sans-serif; font-weight: 700; color: #2C1810; }
+.aesthetic-retro95 .sd-divider { background: #C4A87E; }
+.aesthetic-retro95 .sd-reset { font-family: 'Nunito', sans-serif; }
+.aesthetic-retro95 .sd-footer { border-top: 1.5px solid #C4A87E; }
