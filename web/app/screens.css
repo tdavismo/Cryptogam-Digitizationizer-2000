@@ -68,8 +68,11 @@
   pointer-events: none;
 }
 
-/* ── Bounding-box overlay colours (themeable via CSS classes) ─── */
-.bb polygon { stroke-width: 1.5; fill-opacity: 1; }
+/* ── Bounding-box overlay colours (themeable via CSS classes) ───
+   non-scaling-stroke keeps the outline a constant screen width regardless of
+   the SVG viewBox (the live preview's viewBox is full image-pixel size, so a
+   plain stroke-width of 2 would render sub-pixel). */
+.bb polygon { stroke-width: 1.5; fill-opacity: 1; vector-effect: non-scaling-stroke; }
 .bb-ok     polygon { stroke: #5BC067; fill: rgba(91,192,103,0.07); }
 .bb-ok     text    { fill: #5BC067; }
 .bb-red    polygon { stroke: #FF6177; fill: rgba(255,97,119,0.14); }
@@ -79,11 +82,24 @@
 .bb-active polygon { stroke: #E85C75; fill: rgba(232,92,117,0.22); stroke-width: 2.2; }
 .bb-active text    { fill: #E85C75; }
 
-/* Dim overlay outside the detected packet boxes — masked by the SVG <mask>
-   so only the non-packet area is covered. Each skin overrides --preview-dim
-   to tint the dim layer in keeping with its palette. */
-:root { --preview-dim: rgba(8, 12, 10, 0.72); }
-.lp-dim { fill: var(--preview-dim); }
+/* Live-preview boxes — bolder than the minimap, no fill, accent number with a
+   dark halo (paint-order: stroke) so it reads on any specimen background. The
+   transparency mask was dropped: a solid bold stroke is clearer and avoids the
+   mask/padding/backdrop-filter interactions that broke it under some skins. */
+:root { --lp-accent: #FFD23F; }
+.lp-box polygon {
+  fill: none;
+  stroke: var(--lp-accent);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.lp-box text {
+  fill: var(--lp-accent);
+  stroke: rgba(0, 0, 0, 0.78);
+  stroke-width: 4px;
+  paint-order: stroke;
+  vector-effect: non-scaling-stroke;
+}
 
 /* ── Screen 1 · Variant B ────────────────────────────────────── */
 .setup-b { display: flex; flex-direction: column; gap: 16px; height: var(--work-h); }

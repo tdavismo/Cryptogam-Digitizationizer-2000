@@ -291,8 +291,7 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
   }
   const { src, boxes, iw, ih, name } = preview;
   const list   = boxes || [];
-  const fontPx = Math.max(11, Math.round(ih * 0.016));
-  const maskId = "lp-mask-" + (name || "x").replace(/[^A-Za-z0-9_-]/g, "_");
+  const fontPx = Math.max(13, Math.round(ih * 0.018));
   /* Use natural dimensions of the *displayed* image when available — that's
      what /api/file actually served (post-EXIF), defending against any future
      orientation mismatch between server iw/ih and what the browser shows. */
@@ -309,28 +308,18 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
       {overlayReady &&
         <svg viewBox={`0 0 ${vw} ${vh}`} preserveAspectRatio="xMidYMid meet"
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-          {/* Mask: white = dim, black = clear (the packet windows) */}
-          <defs>
-            <mask id={maskId} maskUnits="userSpaceOnUse">
-              <rect x="0" y="0" width={vw} height={vh} fill="white" />
-              {list.map((b, i) =>
-                <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="black" />
-              )}
-            </mask>
-          </defs>
-          {/* Single dim overlay, masked so only the non-packet area is covered */}
-          <rect x="0" y="0" width={vw} height={vh} mask={`url(#${maskId})`}
-            className="lp-dim" />
-          {/* Bounding box outlines + numbers */}
+          {/* Solid bold stroke + haloed accent number per box — no dim mask.
+              Styling (colour, weight, non-scaling stroke, number halo) lives
+              in .lp-box, themed per skin via --lp-accent. */}
           {list.map((b, i) => {
             const pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
               .map((p) => p.join(",")).join(" ");
             return (
-              <g key={i} className="bb bb-ok">
+              <g key={i} className="lp-box">
                 <polygon points={pts} strokeLinejoin="round" />
-                <text x={b.x + 5} y={b.y + fontPx + 3} fontSize={fontPx}
+                <text x={b.x + 6} y={b.y + fontPx + 4} fontSize={fontPx}
                   fontFamily="var(--bb-font, 'IBM Plex Mono', monospace)"
-                  fontWeight="600" opacity="0.9">{String(b.idx).padStart(2, "0")}</text>
+                  fontWeight="700">{String(b.idx).padStart(2, "0")}</text>
               </g>);
           })}
         </svg>

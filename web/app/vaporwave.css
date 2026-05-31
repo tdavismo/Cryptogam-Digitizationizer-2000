@@ -60,7 +60,7 @@
   --bb-font: 'Space Mono', monospace;
 
   /* Dim mask outside the packet boxes — sunset violet, slightly punchier */
-  --preview-dim: rgba(28, 8, 56, 0.78);
+  --lp-accent: #5EE7FF;
 }
 
 /* ── Sunset gradient background + perspective grid overlay ───── */
