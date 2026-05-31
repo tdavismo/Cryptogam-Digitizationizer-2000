@@ -49,7 +49,12 @@ function _viewRegion(box, src, container, marginFrac = 0.35) {
   return { vx, vy, vw, vh, scale };
 }
 
-function Handle({ pos }) { return <span className={`bbox-handle ${pos}`} />; }
+function Handle({ pos, onDrag }) {
+  /* Stop the mousedown from bubbling to the bbox body (which would start a
+     "move" drag) and start a "resize" drag on this handle instead. */
+  return <span className={`bbox-handle ${pos}`}
+    onMouseDown={(e) => { e.stopPropagation(); onDrag(e, "resize", pos); }} />;
+}
 
 /* Empty-state card (same shape as the QC / VVGo empty states). */
 function RedrawEmpty({ msg }) {
@@ -135,12 +140,146 @@ function RedrawBoundary() {
   const sibIndex = siblings.findIndex((s) => s.p === curPath);
   const grid     = _gridFor(siblings.length || 1);
 
-  /* Auto-zoom math */
+  /* draftBox is the user's in-progress redraw — overrides the manifest box
+     until Accept (POST /api/redraw + manifest mutation) or Reset (discard). */
+  const [draftBox,  setDraftBox]  = useStateS3(null);
+  const [flash,     setFlash]     = useStateS3(null);   // "saved" | "failed:..."
+  const [saving,    setSaving]    = useStateS3(false);
+  const dragRef = useRefS3(null);
+
+  /* The "effective" box (draft if set, else the manifest's) drives every
+     position / readout. */
+  const effective = draftBox || (cur
+    ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h }
+    : null);
+
+  /* Auto-zoom is computed from the original manifest box (the source region
+     shown stays fixed during a redraw — the box moves inside it). */
   const view = useMemoS3(
     () => (cur && container.cw ? _viewRegion(cur, cur, container) : null),
     [cur, container.cw, container.ch]);
 
-  function goto(n) { setIdx(Math.max(0, Math.min(cropPaths.length - 1, n))); }
+  /* Navigation clears any in-progress draft. */
+  function goto(n) {
+    setDraftBox(null);
+    setIdx(Math.max(0, Math.min(cropPaths.length - 1, n)));
+  }
+
+  /* ── Drag interactions ────────────────────────────────────────────────
+     Single state machine: mousedown anywhere on the bbox starts either a
+     "move" (body) or "resize" (handle) drag. Mousemove / mouseup listeners
+     attach to the window so the cursor can leave the editor without losing
+     the drag. Delta is in editor px, converted to source px via view.scale. */
+  function startDrag(e, mode, handle) {
+    if (!cur || !view || saving) return;
+    e.preventDefault();
+    const start = effective;
+    dragRef.current = { mode, handle, mx: e.clientX, my: e.clientY, box: start };
+
+    const MIN = 20;     // minimum bbox edge length (source px) to keep useable
+    const sw = cur.source_w, sh = cur.source_h;
+
+    const onMove = (ev) => {
+      const d = dragRef.current; if (!d) return;
+      const dx = (ev.clientX - d.mx) / view.scale;
+      const dy = (ev.clientY - d.my) / view.scale;
+      let { x, y, w, h } = d.box;
+      if (d.mode === "move") {
+        x += dx; y += dy;
+      } else {
+        const h_ = d.handle;
+        if (h_.includes("n")) { y += dy; h -= dy; }
+        if (h_.includes("s")) { h += dy; }
+        if (h_.includes("w")) { x += dx; w -= dx; }
+        if (h_.includes("e")) { w += dx; }
+      }
+      /* Enforce min size before clamping position so dragging a left edge
+         past the right edge doesn't flip the box. */
+      if (w < MIN) { if (d.mode === "resize" && d.handle.includes("w")) x = d.box.x + d.box.w - MIN; w = MIN; }
+      if (h < MIN) { if (d.mode === "resize" && d.handle.includes("n")) y = d.box.y + d.box.h - MIN; h = MIN; }
+      /* Clamp to source bounds, preserving size where possible (move) and
+         shrinking only when we hit an edge during a resize. */
+      if (d.mode === "move") {
+        x = Math.max(0, Math.min(sw - w, x));
+        y = Math.max(0, Math.min(sh - h, y));
+      } else {
+        if (x < 0)         { w += x; x = 0; }
+        if (y < 0)         { h += y; y = 0; }
+        if (x + w > sw)    { w = sw - x; }
+        if (y + h > sh)    { h = sh - y; }
+        w = Math.max(MIN, w);
+        h = Math.max(MIN, h);
+      }
+      setDraftBox({ x: Math.round(x), y: Math.round(y),
+                    w: Math.round(w), h: Math.round(h) });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  /* ── Accept — POST /api/redraw, mutate local manifest, advance ─────── */
+  async function accept() {
+    if (!draftBox || !cur || saving) return;
+    setSaving(true);
+    try {
+      const r = await fetch("/api/redraw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_path: cur.source_path,
+          output_path: curPath,
+          x: draftBox.x, y: draftBox.y, w: draftBox.w, h: draftBox.h,
+          /* Re-apply the original padding so the saved file matches the
+             original batch's geometry. Deskewed rows lose this info; fall
+             back to the standard 30 px the batch defaults to. */
+          padding: cur.padding != null ? cur.padding : 30,
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.detail || r.statusText);
+      }
+      /* Mutate the manifest in place so a re-visit / Reset would restore to
+         the new box, and so the QC thumbnail picks up the new image on its
+         next render (it loads via /api/file which is cache-busted). */
+      setManifest((prev) => ({
+        ...prev,
+        crops: { ...prev.crops,
+                 [curPath]: { ...prev.crops[curPath], ...draftBox } },
+      }));
+      setDraftBox(null);
+      setFlash("saved");
+      setTimeout(() => setFlash(null), 1400);
+      /* Auto-advance is a real volunteer accelerator — they almost always
+         redraw a series of crops in a row. Skip the bump on the last crop. */
+      if (idx < cropPaths.length - 1) {
+        setIdx(idx + 1);
+      }
+    } catch (e) {
+      setFlash("failed:" + e.message);
+      setTimeout(() => setFlash(null), 3200);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /* ── Keyboard shortcuts ────────────────────────────────────────────── */
+  useEffectS3(() => {
+    const onKey = (e) => {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+      if (e.key === "Enter")       { if (draftBox) accept(); }
+      else if (e.key === "r" || e.key === "R") setDraftBox(null);
+      else if (e.key === "ArrowLeft")  goto(idx - 1);
+      else if (e.key === "ArrowRight") goto(idx + 1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   /* ── Empty / loading states ──────────────────────────────────────────── */
   if (!session)
@@ -166,13 +305,15 @@ function RedrawBoundary() {
     maxWidth: "none", maxHeight: "none",
   } : { display: "none" };
 
-  // Bbox placement — same transform space as the image
-  const boxStyle = view ? {
+  // Bbox placement — uses the effective box (draft || manifest) so it tracks
+  // live while the user drags.
+  const boxStyle = view && effective ? {
     position: "absolute",
-    left:   (cur.x - view.vx) * view.scale,
-    top:    (cur.y - view.vy) * view.scale,
-    width:  cur.w * view.scale,
-    height: cur.h * view.scale,
+    left:   (effective.x - view.vx) * view.scale,
+    top:    (effective.y - view.vy) * view.scale,
+    width:  effective.w * view.scale,
+    height: effective.h * view.scale,
+    cursor: saving ? "wait" : "move",
   } : { display: "none" };
 
   return (
@@ -187,10 +328,13 @@ function RedrawBoundary() {
             {view && <>
               <img src={"/api/file?path=" + encodeURIComponent(cur.source_path)}
                    alt="" style={imgStyle} draggable={false} />
-              <div className="bbox" style={boxStyle}>
+              <div className="bbox" style={boxStyle}
+                   onMouseDown={(e) => startDrag(e, "move")}>
                 {["nw","n","ne","e","se","s","sw","w"].map(
-                  (h) => <Handle key={h} pos={h} />)}
-                <span className="bbox-dim">{cur.w} × {cur.h} px</span>
+                  (h) => <Handle key={h} pos={h} onDrag={startDrag} />)}
+                <span className="bbox-dim">
+                  {effective.w} × {effective.h} px{draftBox ? "  ·  unsaved" : ""}
+                </span>
               </div>
             </>}
             <span className="ph-label" style={{ position: "absolute", bottom: 12, left: 14,
@@ -245,26 +389,43 @@ function RedrawBoundary() {
             <div className="panel-body">
               <div className="meta-grid">
                 <span className="mk">X · Y</span>
-                <span className="mv">{cur ? cur.x : "—"} · {cur ? cur.y : "—"}</span>
+                <span className="mv">{effective ? effective.x : "—"} · {effective ? effective.y : "—"}</span>
                 <span className="mk">W · H</span>
-                <span className="mv">{cur ? cur.w : "—"} · {cur ? cur.h : "—"}</span>
+                <span className="mv">{effective ? effective.w : "—"} · {effective ? effective.h : "—"}</span>
                 <span className="mk">Padding</span>
-                <span className="mv">{cur && cur.padding != null ? cur.padding + " px" : "(deskewed)"}</span>
+                <span className="mv">{cur && cur.padding != null ? cur.padding + " px" : "(deskewed → 30)"}</span>
               </div>
             </div>
           </div>
 
           <div className="redraw-actions">
-            <button className="btn btn-primary btn-lg" style={{ flex: 1 }} disabled>
-              <Icon d={ICONS.check} size={15} /> Accept Boundary
+            <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+              disabled={!draftBox || saving}
+              onClick={accept}>
+              <Icon d={ICONS.check} size={15} /> {saving ? "Saving…" : "Accept Boundary"}
             </button>
-            <button className="btn btn-lg" title="Reset to detected box" disabled>
+            <button className="btn btn-lg" title="Reset to detected box"
+              disabled={!draftBox || saving}
+              onClick={() => setDraftBox(null)}>
               <Icon paths={ICONS.reset} size={15} />
             </button>
           </div>
-          <div className="hint" style={{ textAlign: "center" }}>
-            Drag interactions arrive in Phase C
-          </div>
+          {flash &&
+            <div className="hint" style={{
+              textAlign: "center",
+              color: flash === "saved" ? "var(--green)" : "var(--red-bright)",
+              fontWeight: 600,
+            }}>
+              {flash === "saved" ? "✓  Crop saved" : "✗  " + flash.replace(/^failed:/, "")}
+            </div>
+          }
+          {!flash &&
+            <div className="hint" style={{ textAlign: "center" }}>
+              <span className="kbd">Enter</span> accept ·{" "}
+              <span className="kbd">R</span> reset ·{" "}
+              <span className="kbd">←/→</span> prev / next
+            </div>
+          }
 
         </div>
       </div>
