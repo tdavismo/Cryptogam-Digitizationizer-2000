@@ -338,9 +338,15 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [out, setOut]           = useSticky("out", "");
   const [logLines, setLogLines] = useSticky("logLines", null);  // null → design sample
   const [summary, setSummary]   = useSticky("summary", null);
-  const [preview, setPreview]   = useSticky("preview", null);   // {src,boxes,iw,ih,name}
+  /* Every processed image is kept as a frame so the user can step back
+     through the batch with the preview arrows. frameIdx is which frame is
+     shown; followRef pins the preview to the newest frame during a live run
+     until the user navigates manually. */
+  const [frames, setFrames]     = useSticky("frames", []);      // [{src,boxes,iw,ih,name}]
+  const [frameIdx, setFrameIdx] = useSticky("frameIdx", 0);
   const [running, setRunning]   = useStateS1(false);            // never persisted
-  const abortRef = useRefS1(null);
+  const abortRef  = useRefS1(null);
+  const followRef = useRefS1(true);
 
   /* Advanced settings — mirror the original desktop app's SegSettings */
   const [foreground, setForeground] = useSticky("foreground", "light");
@@ -385,6 +391,13 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    /* Fresh frame reel; pin the preview to the newest frame as they stream.
+       localFrames is owned by this closure to avoid stale-state when
+       appending from inside the SSE onEvent handler. */
+    setFrames([]);
+    setFrameIdx(0);
+    followRef.current = true;
+    const localFrames = [];
     let packets = 0;
     let outputDir = null;
 
@@ -406,11 +419,14 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             addLog(evt.count ? "ok" : "warn",
               `${evt.name}: ${evt.count} packet${evt.count === 1 ? "" : "s"}`);
             setSummary(`${evt.i} / ${evt.total} images · ${packets} crops`);
-            /* Show the just-processed image with its detected boxes */
-            setPreview({
+            /* Append this image to the reel; auto-advance to it unless the
+               user has navigated away to inspect an earlier frame. */
+            localFrames.push({
               src: "/api/file?path=" + encodeURIComponent(evt.path),
               boxes: evt.boxes, iw: evt.iw, ih: evt.ih, name: evt.name,
             });
+            setFrames(localFrames.slice());
+            if (followRef.current) setFrameIdx(localFrames.length - 1);
           } else if (evt.type === "error") {
             addLog("err", `${evt.name}: ${evt.error}`);
           } else if (evt.type === "done") {
@@ -576,7 +592,30 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
 
       <div className="setup-b-main">
         <div className="setup-b-preview" style={{ flex: 1, minWidth: 0 }}>
-          <LivePreview preview={preview} fallbackRows={rows} fallbackCols={cols} />
+          <LivePreview preview={frames[frameIdx] || null}
+                       fallbackRows={rows} fallbackCols={cols} />
+          {frames.length > 0 &&
+            <div className="lp-nav">
+              {/* End-of-reel dot to the LEFT of the back arrow — lit on first frame */}
+              <span className={"lp-end" + (frameIdx <= 0 ? " on" : "")}>●</span>
+              <button className="lp-arrow" disabled={frameIdx <= 0}
+                onClick={() => { followRef.current = false; setFrameIdx(Math.max(0, frameIdx - 1)); }}>
+                ◀
+              </button>
+              <span className="lp-count">{frameIdx + 1} / {frames.length}</span>
+              <button className="lp-arrow" disabled={frameIdx >= frames.length - 1}
+                onClick={() => {
+                  const next = Math.min(frames.length - 1, frameIdx + 1);
+                  /* Re-pin to live tail only if we step onto the newest frame. */
+                  followRef.current = next === frames.length - 1 && running;
+                  setFrameIdx(next);
+                }}>
+                ▶
+              </button>
+              {/* End-of-reel dot to the RIGHT of the forward arrow — lit on last frame */}
+              <span className={"lp-end" + (frameIdx >= frames.length - 1 ? " on" : "")}>●</span>
+            </div>
+          }
         </div>
         <div className="setup-b-log">
           <ActivityLog compact lines={logLines} summary={summary} live={running} />
