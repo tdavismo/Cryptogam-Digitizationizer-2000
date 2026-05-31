@@ -101,7 +101,16 @@ function App() {
             </div>
           </div>
 
-          {tab === "setup" && <SessionSetup variant={SETUP_VARIANT} />}
+          {/* Session Setup stays permanently mounted (hidden when inactive) so
+              an in-flight segmentation keeps streaming when the user visits
+              another tab — conditional unmounting was silently killing the run
+              (every setState from the live SSE loop became a no-op). While
+              active we use display:contents so it stays out of the box tree and
+              the layout/height chain is unchanged. The other three screens stay
+              conditionally mounted so they re-fetch fresh on each open. */}
+          <div style={{ display: tab === "setup" ? "contents" : "none" }}>
+            <SessionSetup variant={SETUP_VARIANT} />
+          </div>
           {tab === "qc" && <QCReview />}
           {tab === "redraw" && <RedrawBoundary />}
           {tab === "submit" && <VVGoSubmission />}
