@@ -36,6 +36,7 @@ __all__ = [
     "_to_bgr8",
     "_padded_crop",
     "_detect_packets",
+    "_imread_oriented",
 ]
 
 
@@ -74,6 +75,10 @@ class SegSettings:
     aspect_min:         float = 0.20
     aspect_max:         float = 5.0
     deskew:             bool  = True
+    # Force every source image into portrait (taller-than-wide) orientation
+    # before processing. Off by default — most herbarium captures are already
+    # portrait — but useful when a batch was shot in landscape mode.
+    auto_portrait:      bool  = False
 
 
 # ─── Result model ─────────────────────────────────────────────────────────────
@@ -97,6 +102,42 @@ def _to_uint8(img: np.ndarray) -> np.ndarray:
     if hi <= lo:
         return np.zeros(img.shape, dtype=np.uint8)
     return np.clip((f - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _imread_oriented(path: Path,
+                     auto_portrait: bool = False) -> np.ndarray:
+    """
+    Read an image from disk and return it in *display orientation* — meaning:
+
+    1. Any EXIF Orientation tag is applied (cv2.imread ignores EXIF, so we
+       use Pillow's ImageOps.exif_transpose to bake it into the pixels).
+    2. If *auto_portrait* is set, landscape images (wider than tall) are
+       rotated 90° counter-clockwise so packets always face up.
+
+    Falls back to cv2.imread for formats Pillow can't handle (rare; TIFFs
+    with unusual compression). Returns a BGR uint8 ndarray, the same format
+    cv2.imread would have produced.
+    """
+    bgr: np.ndarray | None = None
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(str(path)) as im:
+            im = ImageOps.exif_transpose(im)        # apply EXIF rotation
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            rgb = np.asarray(im)
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except Exception:
+        bgr = None
+    if bgr is None:
+        bgr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if bgr is None:
+            raise IOError(f"Cannot read: {path.name}")
+
+    if auto_portrait and bgr.shape[1] > bgr.shape[0]:
+        # cv2 ROTATE_90_COUNTERCLOCKWISE — produces a (W, H) -> (H, W) result
+        bgr = cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return bgr
 
 
 def _to_bgr8(img: np.ndarray) -> np.ndarray:
@@ -312,9 +353,7 @@ def segment_image(image_path: Path,
     foreground : str          ('light' | 'dark')
     top_crop_px : int
     """
-    img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise IOError(f"Cannot read: {image_path.name}")
+    img = _imread_oriented(image_path, auto_portrait=s.auto_portrait)
     bgr8   = _to_bgr8(img)
     top_px = int(img.shape[0] * s.top_crop_frac)
     work   = bgr8[top_px:, :]
@@ -366,10 +405,7 @@ def save_crops_detailed(image_path: Path, output_dir: Path,
     iw_full     : int  — full source-image width  (px)
     ih_full     : int  — full source-image height (px)
     """
-    img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise IOError(f"Cannot read: {image_path.name}")
-
+    img = _imread_oriented(image_path, auto_portrait=s.auto_portrait)
     ih_full, iw_full = img.shape[:2]
     bgr8      = _to_bgr8(img)
     top_px    = int(img.shape[0] * s.top_crop_frac)

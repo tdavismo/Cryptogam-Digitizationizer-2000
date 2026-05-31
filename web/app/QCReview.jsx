@@ -28,13 +28,21 @@ const STATUS_RING = {
 /* ── Card — replaces the synthetic Placeholder with the real packet image.
    We keep the exact wrapper structure (.thumb / .thumb-ph / .thumb-foot)
    so every skin's CSS overrides keep applying without any changes. */
-function CropThumb({ c, selected, onClick }) {
+function CropThumb({ c, selected, multi, onClick }) {
   const ring = STATUS_RING[c.status] || "neutral";
+  const cls  = ["thumb", ring,
+                selected ? "sel"   : "",
+                multi    ? "multi" : ""].filter(Boolean).join(" ");
   return (
-    <button className={`thumb ${ring} ${selected ? "sel" : ""}`} onClick={onClick}>
+    <button className={cls}
+      onClick={(e) => onClick(c, e)}
+      onContextMenu={(e) => e.preventDefault()}>
       <div className="thumb-ph">
+        {/* output crops have no EXIF (cv2.imwrite writes raw pixels), so
+            oriented=0 is the right + cheaper path for thumbnails */}
         <img className="thumb-img" loading="lazy"
-          src={"/api/file?path=" + encodeURIComponent(c.path)} alt={c.name} />
+          src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path)}
+          alt={c.name} />
         <span className="thumb-num">{c.idxLabel}</span>
       </div>
       <div className="thumb-foot">
@@ -71,6 +79,7 @@ function QCReview() {
   const [notes,     setNotes]     = useStateS2(() => ({ ...QC.notes }));
   const [filter,    setFilter]    = useStateS2("all");
   const [selPath,   setSelPath]   = useStateS2(QC.selectedPath);
+  const [multiSel,  setMultiSel]  = useStateS2(() => new Set(QC.multi || []));
 
   /* Load real crops on mount / when the batch output dir changes. */
   useEffectS2(() => {
@@ -154,17 +163,62 @@ function QCReview() {
       return next;
     });
   }
-  function selectCrop(c) {
+  function selectCrop(c, ev) {
+    /* Shift-click extends a contiguous range from the previous anchor; plain
+       click selects a single crop and resets the anchor. */
+    if (ev && ev.shiftKey && selPath) {
+      const list = visible;
+      const a = list.findIndex((x) => x.path === selPath);
+      const b = list.findIndex((x) => x.path === c.path);
+      if (a >= 0 && b >= 0) {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        const range = list.slice(lo, hi + 1).map((x) => x.path);
+        QC.multi = new Set(range);
+        setMultiSel(new Set(range));
+      }
+    } else {
+      QC.multi = new Set();
+      setMultiSel(new Set());
+    }
     setSelPath(c.path);
     QC.selectedPath = c.path;
   }
+
   function bulkApprove() {
-    const next = { ...overrides };
-    for (const c of visible) {
-      if (c.status === "unreviewed") next[c.path] = "approved";
+    /* When the user has a shift-selected range, approve those specifically;
+       otherwise approve every currently-visible unreviewed crop. Functional
+       update so we don't lose concurrent setStatus writes. */
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (multiSel.size > 0) {
+        for (const p of multiSel) next[p] = "approved";
+      } else {
+        for (const c of visible) {
+          if (c.status === "unreviewed") next[c.path] = "approved";
+        }
+      }
+      QC.overrides = next;
+      return next;
+    });
+  }
+
+  function openRedrawFor(c) {
+    /* Hand off the selected crop to the Redraw screen.  Both screens share
+       the same manifest, sorted lexicographically; we pre-set RS.idx so the
+       Redraw view opens on this crop, then trigger a tab switch via the
+       App's setTab — exposed on window for cross-screen navigation. */
+    const allPaths = Object.keys(window.__CDZ_REDRAW_MANIFEST_PATHS || {})
+      .concat([c.path]); // fallback if redraw hasn't mounted yet
+    /* RS lives in RedrawBoundary.jsx; index is the sorted position of the
+       crop path within the manifest. We compute by sorting the QC crops in
+       the same order Redraw does. */
+    const sorted = [...crops].sort((a, b) => a.path.localeCompare(b.path));
+    const i = sorted.findIndex((x) => x.path === c.path);
+    if (!window.__CDZ_REDRAW_STATE) window.__CDZ_REDRAW_STATE = { idx: 0 };
+    window.__CDZ_REDRAW_STATE.idx = i >= 0 ? i : 0;
+    if (typeof window.__CDZ_SET_TAB === "function") {
+      window.__CDZ_SET_TAB("redraw");
     }
-    QC.overrides = next;
-    setOverrides(next);
   }
 
   /* ── Empty state — no batch in this session ──────────────────────── */
@@ -178,12 +232,26 @@ function QCReview() {
         {/* Bulk actions */}
         <div className="row" style={{ gap: 8, flexShrink: 0 }}>
           <button className="btn btn-sm" onClick={bulkApprove}>
-            <Icon d={ICONS.check} size={14} /> Approve all visible
+            <Icon d={ICONS.check} size={14} />{" "}
+            {multiSel.size > 0
+              ? `Approve ${multiSel.size} selected`
+              : "Approve all visible"}
           </button>
           <button className="btn btn-sm"
-            disabled={!cur}
-            onClick={() => cur && setStatus(cur.path, "flagged")}>
-            <Icon paths={ICONS.flag} size={14} /> Flag selected
+            disabled={!cur && multiSel.size === 0}
+            onClick={() => {
+              setOverrides((prev) => {
+                const next = { ...prev };
+                const targets = multiSel.size > 0 ? [...multiSel] : (cur ? [cur.path] : []);
+                for (const p of targets) next[p] = "flagged";
+                QC.overrides = next;
+                return next;
+              });
+            }}>
+            <Icon paths={ICONS.flag} size={14} />{" "}
+            {multiSel.size > 0
+              ? `Flag ${multiSel.size} selected`
+              : "Flag selected"}
           </button>
         </div>
 
@@ -233,7 +301,8 @@ function QCReview() {
               {visible.map((c) =>
                 <CropThumb key={c.path} c={c}
                   selected={cur && cur.path === c.path}
-                  onClick={() => selectCrop(c)} />
+                  multi={multiSel.has(c.path)}
+                  onClick={selectCrop} />
               )}
             </div>
           }
@@ -291,7 +360,8 @@ function QCReview() {
                     onClick={() => setStatus(cur.path, "flagged")}>
                     <Icon paths={ICONS.flag} size={14} /> Flag
                   </button>
-                  <button className="btn">
+                  <button className="btn"
+                    onClick={() => openRedrawFor(cur)}>
                     <Icon paths={ICONS.crop} size={14} /> Redraw
                   </button>
                 </div>

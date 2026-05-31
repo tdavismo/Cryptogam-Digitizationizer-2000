@@ -39,6 +39,7 @@ import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -48,6 +49,7 @@ from segmenter_core import (
     SegSettings, ImageResult,
     segment_image, save_crops, save_crops_detailed, flag_results,
     resegment_or_bisect, _auto_output_dir, _padded_crop, _to_bgr8,
+    _imread_oriented,
 )
 
 # Correct MIME types regardless of the host's Windows registry, which can
@@ -114,6 +116,7 @@ class SegSettingsIn(BaseModel):
     aspect_min:          float = 0.20
     aspect_max:          float = 5.0
     deskew:              bool  = True
+    auto_portrait:       bool  = False
 
     def to_core(self) -> SegSettings:
         return SegSettings(**self.dict())
@@ -331,18 +334,53 @@ async def list_images(input_dir: str = Query(..., description="Path to source im
 # ---------------------------------------------------------------------------
 
 @app.get("/api/file", summary="Serve a local image file", tags=["Gallery"])
-async def serve_file(path: str = Query(..., description="Absolute path to an image file")):
+async def serve_file(
+    path: str = Query(..., description="Absolute path to an image file"),
+    oriented: int = Query(
+        1, description="1 = bake EXIF orientation into bytes before serving "
+                       "(default); 0 = serve raw file"),
+    auto_portrait: int = Query(
+        0, description="1 = also rotate landscape→portrait"),
+):
     """
-    Stream one image file from disk for thumbnails / previews. Restricted to
-    image extensions. NOTE: localhost single-user tool; restrict to an output
-    root if this ever becomes a hosted multi-user service.
+    Stream one image file from disk for thumbnails / previews.
+
+    By default the bytes are EXIF-normalised before sending so the browser
+    displays the same pixel orientation that our segmentation operated on —
+    SVG overlays (bounding boxes, dim masks) line up with the image.
+
+    Set oriented=0 to serve the raw file (faster path; safe for output crops
+    written by cv2.imwrite, which never have EXIF). NOTE: localhost
+    single-user tool; restrict to an output root if this ever becomes a
+    hosted multi-user service.
     """
     p = Path(path)
     if not p.is_file():
         raise HTTPException(404, f"File not found: {p}")
     if p.suffix.lower() not in IMAGE_EXTS:
         raise HTTPException(415, f"Not an image file: {p.name}")
-    return FileResponse(str(p))
+
+    if not oriented:
+        return FileResponse(str(p))
+
+    def _encode() -> bytes:
+        bgr = _imread_oriented(p, auto_portrait=bool(auto_portrait))
+        # Match the source's compression style: JPEG for jpeg, PNG otherwise.
+        ext = ".jpg" if p.suffix.lower() in (".jpg", ".jpeg") else ".png"
+        ok, buf = cv2.imencode(ext, bgr,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 88] if ext == ".jpg" else [])
+        if not ok:
+            raise RuntimeError("encode failed")
+        return buf.tobytes()
+
+    try:
+        data = await asyncio.to_thread(_encode)
+    except Exception:
+        # Fall back to raw bytes — better to show something than 500
+        return FileResponse(str(p))
+    media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+    return Response(content=data, media_type=media,
+                    headers={"Cache-Control": "no-cache"})
 
 
 # ---------------------------------------------------------------------------
@@ -438,14 +476,13 @@ async def get_manifest(output_dir: str = Query(..., description="Batch output fo
                         padding = max(0, bx - int(row["crop_x1"]))
                 except Exception:
                     pass
-                # Source dimensions — cached per file to avoid re-reading
+                # Source dimensions — must use the same EXIF orientation as
+                # /api/file (and the segmenter) so the Redraw bbox math
+                # operates in the same coord space the browser displays.
                 if src not in _MANIFEST_DIM_CACHE:
                     try:
-                        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
-                        if img is not None:
-                            _MANIFEST_DIM_CACHE[src] = (img.shape[1], img.shape[0])
-                        else:
-                            _MANIFEST_DIM_CACHE[src] = (0, 0)
+                        img = _imread_oriented(src)
+                        _MANIFEST_DIM_CACHE[src] = (img.shape[1], img.shape[0])
                     except Exception:
                         _MANIFEST_DIM_CACHE[src] = (0, 0)
                 sw, sh = _MANIFEST_DIM_CACHE[src]
@@ -496,9 +533,9 @@ async def redraw(req: RedrawRequest):
         raise HTTPException(404, f"Source not found: {src}")
 
     def _do() -> dict:
-        img = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
-        if img is None:
-            raise IOError(f"Cannot read source: {src.name}")
+        # Use the EXIF-normalised reader so the box coords from the editor
+        # (which sees /api/file's normalised bytes) map correctly here.
+        img = _imread_oriented(src)
         ih, iw = img.shape[:2]
         if not (0 <= req.x < iw and 0 <= req.y < ih and req.w > 0 and req.h > 0):
             raise ValueError(
@@ -555,6 +592,7 @@ _APP_CFG_PATH = Path.home() / ".cryptogam_config.json"
 _CFG_KEYS = {
     "vvgo_token", "vvgo_model", "vvgo_prompt", "vvgo_json_dir",
     "vvgo_workers", "vvgo_ocr", "vvgo_wfo", "vvgo_cop90", "vvgo_ocr_only",
+    "setup_rows", "setup_cols", "setup_auto_portrait",
 }
 
 

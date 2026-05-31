@@ -274,6 +274,13 @@ function Seg({ value, options, onChange }) {
    skin themes it independently (sunset violet for vaporwave, sepia for
    retro95, near-black for blueprint). */
 function LivePreview({ preview, fallbackRows, fallbackCols }) {
+  /* Track which src has actually loaded so the SVG mask + boxes only render
+     once they line up with the displayed image — otherwise a fast batch
+     produces a visible "rotated mask" flicker as new image bytes lag the
+     state update. */
+  const [loadedSrc, setLoadedSrc] = useStateS1(null);
+  const lpRef = useRefS1(null);
+
   if (!preview || !preview.src) {
     return (
       <ScanPreview
@@ -286,38 +293,48 @@ function LivePreview({ preview, fallbackRows, fallbackCols }) {
   const list   = boxes || [];
   const fontPx = Math.max(11, Math.round(ih * 0.016));
   const maskId = "lp-mask-" + (name || "x").replace(/[^A-Za-z0-9_-]/g, "_");
+  /* Use natural dimensions of the *displayed* image when available — that's
+     what /api/file actually served (post-EXIF), defending against any future
+     orientation mismatch between server iw/ih and what the browser shows. */
+  const img = lpRef.current;
+  const vw = img && img.naturalWidth  > 0 ? img.naturalWidth  : iw;
+  const vh = img && img.naturalHeight > 0 ? img.naturalHeight : ih;
+  const overlayReady = loadedSrc === src;
 
   return (
     <div className="scan-photo live-preview" style={{ position: "relative" }}>
-      <img src={src} alt={name}
+      <img ref={lpRef} src={src} alt={name}
+        onLoad={() => setLoadedSrc(src)}
         style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-      <svg viewBox={`0 0 ${iw} ${ih}`} preserveAspectRatio="xMidYMid meet"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-        {/* Mask: white = dim, black = clear (the packet windows) */}
-        <defs>
-          <mask id={maskId} maskUnits="userSpaceOnUse">
-            <rect x="0" y="0" width={iw} height={ih} fill="white" />
-            {list.map((b, i) =>
-              <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="black" />
-            )}
-          </mask>
-        </defs>
-        {/* Single dim overlay, masked so only the non-packet area is covered */}
-        <rect x="0" y="0" width={iw} height={ih} mask={`url(#${maskId})`}
-          className="lp-dim" />
-        {/* Bounding box outlines + numbers */}
-        {list.map((b, i) => {
-          const pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
-            .map((p) => p.join(",")).join(" ");
-          return (
-            <g key={i} className="bb bb-ok">
-              <polygon points={pts} strokeLinejoin="round" />
-              <text x={b.x + 5} y={b.y + fontPx + 3} fontSize={fontPx}
-                fontFamily="var(--bb-font, 'IBM Plex Mono', monospace)"
-                fontWeight="600" opacity="0.9">{String(b.idx).padStart(2, "0")}</text>
-            </g>);
-        })}
-      </svg>
+      {overlayReady &&
+        <svg viewBox={`0 0 ${vw} ${vh}`} preserveAspectRatio="xMidYMid meet"
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+          {/* Mask: white = dim, black = clear (the packet windows) */}
+          <defs>
+            <mask id={maskId} maskUnits="userSpaceOnUse">
+              <rect x="0" y="0" width={vw} height={vh} fill="white" />
+              {list.map((b, i) =>
+                <rect key={i} x={b.x} y={b.y} width={b.w} height={b.h} fill="black" />
+              )}
+            </mask>
+          </defs>
+          {/* Single dim overlay, masked so only the non-packet area is covered */}
+          <rect x="0" y="0" width={vw} height={vh} mask={`url(#${maskId})`}
+            className="lp-dim" />
+          {/* Bounding box outlines + numbers */}
+          {list.map((b, i) => {
+            const pts = [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
+              .map((p) => p.join(",")).join(" ");
+            return (
+              <g key={i} className="bb bb-ok">
+                <polygon points={pts} strokeLinejoin="round" />
+                <text x={b.x + 5} y={b.y + fontPx + 3} fontSize={fontPx}
+                  fontFamily="var(--bb-font, 'IBM Plex Mono', monospace)"
+                  fontWeight="600" opacity="0.9">{String(b.idx).padStart(2, "0")}</text>
+              </g>);
+          })}
+        </svg>
+      }
       <span className="ph-tag">{name} · {list.length} packets</span>
     </div>);
 }
@@ -344,6 +361,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [topCrop, setTopCrop]       = useSticky("topCrop", 0);     // %
   const [padding, setPadding]       = useSticky("padding", 30);    // px
   const [minArea, setMinArea]       = useSticky("minArea", 0.05);  // %
+  const [autoPortrait, setAutoPortrait] = useSticky("autoPortrait", false);
 
   const addLog = (lvl, m) =>
     setLogLines((prev) => [...(prev || []), { t: _now(), lvl, m }]);
@@ -357,6 +375,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
       padding: Number(padding),
       top_crop_frac: Number(topCrop) / 100,
       min_area_frac: Number(minArea) / 100,
+      auto_portrait: autoPortrait,
     };
   }
 
@@ -524,6 +543,18 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
                 </div>
 
                 <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                  <label className="check-row" style={{ marginBottom: 0 }}>
+                    <input type="checkbox" checked={autoPortrait}
+                      onChange={(e) => setAutoPortrait(e.target.checked)} />
+                    <span>Auto-portrait
+                      <span className="hint" style={{ marginLeft: 6 }}>
+                        — rotate landscape source images 90° so packets face up
+                      </span>
+                    </span>
+                  </label>
+                </div>
+
+                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Top crop — {topCrop}%</label>
                   <input type="range" className="slider" min="0" max="30" step="1"
                     value={topCrop} onChange={(e) => setTopCrop(+e.target.value)} />
@@ -566,8 +597,39 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
 }
 
 function SessionSetup({ variant }) {
-  const [rows, setRows] = useStateS1(4);
-  const [cols, setCols] = useStateS1(3);
+  /* R×C persists via /api/config (keys setup_rows / setup_cols). useSticky
+     keeps the values across tab switches; the first mount fetches from the
+     server, subsequent mounts read from the sticky bag. */
+  const [rows, setRows] = useSticky("rows", 4);
+  const [cols, setCols] = useSticky("cols", 2);
+
+  /* Hydrate from saved config once per page load. After the user changes the
+     value, persist back (debounced via a save flag in the sticky bag so we
+     don't PUT on every render). */
+  React.useEffect(() => {
+    if (window.__CDZ_SETUP_STATE.rcHydrated) return;
+    window.__CDZ_SETUP_STATE.rcHydrated = true;
+    fetch("/api/config")
+      .then((r) => r.ok ? r.json() : {})
+      .then((cfg) => {
+        if (typeof cfg.setup_rows === "number") setRows(cfg.setup_rows);
+        if (typeof cfg.setup_cols === "number") setCols(cfg.setup_cols);
+      })
+      .catch(() => {});
+  }, []);
+  React.useEffect(() => {
+    /* Skip the very first effect run — those values came from defaults or
+       the just-hydrated server config, no need to PUT them back. */
+    if (!window.__CDZ_SETUP_STATE.rcHydrated) return;
+    const t = setTimeout(() => {
+      fetch("/api/config", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ setup_rows: rows, setup_cols: cols }),
+      }).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [rows, cols]);
+
   const props = { rows, cols, setRows, setCols };
   return variant === "B" ? <SessionSetupB {...props} /> : <SessionSetupA {...props} />;
 }

@@ -28,6 +28,11 @@ function App() {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [tab, setTab] = useState("setup");
 
+  /* Cross-screen navigation: QC's "Redraw" button needs to switch to the
+     Redraw tab. Stash setTab on window so any screen can call it without
+     wiring props through every level. */
+  React.useEffect(() => { window.__CDZ_SET_TAB = setTab; }, []);
+
   /* Session Setup variant locked to "B" — SessionSetupA code is
      preserved in SessionSetup.jsx; change this constant to revive it. */
   const SETUP_VARIANT = "B";
