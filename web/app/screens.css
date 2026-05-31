@@ -114,12 +114,40 @@
    Padding lets the image breathe inside the box rather than kissing its
    edges — box-sizing: border-box so width/height 100% on img/svg inside
    continue to mean "fit the padded content area". */
-.setup-b-preview { min-height: 0; display: flex; }
+.setup-b-preview { min-height: 0; display: flex; position: relative; }
 .setup-b-preview .scan-photo {
   flex: 1;
   padding: 14px;
   box-sizing: border-box;
 }
+
+/* Frame navigation overlaid on the bottom edge of the preview. The end dots
+   light up (in the skin accent colour) when the first / last image of the
+   batch is reached. */
+.lp-nav {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.58);
+  z-index: 3;
+}
+.lp-arrow {
+  appearance: none; border: none; cursor: pointer;
+  background: transparent; color: #fff;
+  font-size: 13px; line-height: 1; padding: 3px 8px; border-radius: 6px;
+}
+.lp-arrow:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); }
+.lp-arrow:disabled { opacity: 0.3; cursor: default; }
+.lp-count {
+  font-family: var(--mono); font-size: 11px; color: #fff;
+  min-width: 48px; text-align: center; letter-spacing: 0.02em;
+}
+.lp-end {
+  font-size: 8px; line-height: 1; color: rgba(255, 255, 255, 0.18);
+  transition: color .12s;
+}
+.lp-end.on { color: var(--lp-accent, #FFD23F); }
+
 /* Col 3 = Grid R×C (VVGo token moved to step 04); col 4 = Advanced button */
 .strip-grid { display: grid; grid-template-columns: 1.4fr 1.4fr 1fr auto 0.7fr; gap: 16px; align-items: end; }
 .strip-grid .label { margin-bottom: 5px; }
