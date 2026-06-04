@@ -24,9 +24,34 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "legibilityFont": false
 } /*EDITMODE-END*/;
 
+/* Persist user-facing appearance/accessibility prefs across sessions.
+   useTweaks' own setter targets the design-tool host (absent at runtime), so
+   we layer a thin localStorage cache on top: seed the defaults from storage on
+   first render, and write back whenever a persisted key changes. */
+const CDZ_PREFS_KEY = "cdz_prefs_v1";
+const CDZ_PREF_KEYS = ["aesthetic", "fontSize", "highContrast", "reduceMotion", "legibilityFont"];
+
+function _loadPrefs(defaults) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CDZ_PREFS_KEY) || "{}");
+    const merged = { ...defaults };
+    for (const k of CDZ_PREF_KEYS) if (k in saved) merged[k] = saved[k];
+    return merged;
+  } catch (e) { return defaults; }
+}
+
 function App() {
-  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [t, setTweak] = useTweaks(_loadPrefs(TWEAK_DEFAULTS));
   const [tab, setTab] = useState("setup");
+
+  /* Mirror the persisted-prefs subset to localStorage on every change. */
+  React.useEffect(() => {
+    try {
+      const out = {};
+      for (const k of CDZ_PREF_KEYS) out[k] = t[k];
+      localStorage.setItem(CDZ_PREFS_KEY, JSON.stringify(out));
+    } catch (e) { /* storage unavailable — non-fatal */ }
+  }, [t.aesthetic, t.fontSize, t.highContrast, t.reduceMotion, t.legibilityFont]);
 
   /* Cross-screen navigation: QC's "Redraw" button needs to switch to the
      Redraw tab. Stash setTab on window so any screen can call it without

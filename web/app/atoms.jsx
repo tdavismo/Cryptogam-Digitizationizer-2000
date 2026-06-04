@@ -173,8 +173,9 @@ function ScanPreview({ rows=4, cols=3, flagged={}, activeIndex=null, tag=null, l
             .map(p => p.join(",")).join(" ");
 
           const stateClass = isActive ? "bb-active"
-            : flag === "red"  ? "bb-red"
-            : flag === "gold" ? "bb-gold"
+            : flag === "red"   ? "bb-red"
+            : flag === "gold"  ? "bb-gold"
+            : flag === "green" ? "bb-green"
             : "bb-ok";
 
           const num = String(i+1).padStart(2,"0");

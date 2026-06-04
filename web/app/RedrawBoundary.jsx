@@ -138,7 +138,31 @@ function RedrawBoundary() {
   }, [cur, manifest, cropPaths]);
 
   const sibIndex = siblings.findIndex((s) => s.p === curPath);
-  const grid     = _gridFor(siblings.length || 1);
+
+  /* Minimap layout — use the real R×C the user set on Session Setup so the
+     context grid matches the actual specimen layout (a 4×2 capture shows as
+     4 rows × 2 cols, not a rotated guess). Fall back to a square-ish grid only
+     when the session didn't record a layout. */
+  const grid = (() => {
+    const r = session && session.gridRows, c = session && session.gridCols;
+    if (typeof r === "number" && typeof c === "number" && r * c >= siblings.length) {
+      return { rows: r, cols: c };
+    }
+    return _gridFor(siblings.length || 1);
+  })();
+
+  /* Per-cell QC status colour for the minimap. Siblings are packet-index
+     sorted, so sibling array-index j maps to ScanPreview cell j (cell i shows
+     packet i+1). We pull each crop's QC override (approved/flagged) from the
+     shared QC state, falling back to the manifest-derived status. */
+  const qcOverrides = (window.__CDZ_QC_STATE && window.__CDZ_QC_STATE.overrides) || {};
+  const STATUS_TO_BB = { approved: "green", flagged: "red", none: "red", oversize: "gold" };
+  const miniFlags = {};
+  siblings.forEach((sib, j) => {
+    const ov = qcOverrides[sib.p];
+    const col = STATUS_TO_BB[ov];
+    if (col) miniFlags[j] = col;
+  });
 
   /* draftBox is the user's in-progress redraw — overrides the manifest box
      until Accept (POST /api/redraw + manifest mutation) or Reset (discard). */
@@ -147,22 +171,74 @@ function RedrawBoundary() {
   const [saving,    setSaving]    = useStateS3(false);
   const dragRef = useRefS3(null);
 
+  /* Pan/zoom of the editor viewport. `pan` shifts the visible region in
+     source pixels; `zoom` multiplies the auto-zoom (1 = fit-to-box). Both
+     reset whenever the current crop changes (handled in goto + an effect). */
+  const [pan,  setPan]  = useStateS3({ dx: 0, dy: 0 });
+  const [zoom, setZoom] = useStateS3(1);
+  const panRef = useRefS3(null);
+
   /* The "effective" box (draft if set, else the manifest's) drives every
      position / readout. */
   const effective = draftBox || (cur
     ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h }
     : null);
 
-  /* Auto-zoom is computed from the original manifest box (the source region
-     shown stays fixed during a redraw — the box moves inside it). */
-  const view = useMemoS3(
-    () => (cur && container.cw ? _viewRegion(cur, cur, container) : null),
-    [cur, container.cw, container.ch]);
+  /* Auto-zoom base region around the manifest box, then apply user pan/zoom.
+     Zoom shrinks the region about its centre; pan translates it; both are
+     clamped to the source bounds so you can't scroll off the image. */
+  const view = useMemoS3(() => {
+    if (!cur || !container.cw) return null;
+    const base = _viewRegion(cur, cur, container);
+    if (!base) return null;
+    const sw = cur.source_w, sh = cur.source_h;
+    let vw = base.vw / zoom, vh = base.vh / zoom;
+    vw = Math.min(vw, sw); vh = Math.min(vh, sh);
+    const cx = base.vx + base.vw / 2 + pan.dx;
+    const cy = base.vy + base.vh / 2 + pan.dy;
+    let vx = cx - vw / 2, vy = cy - vh / 2;
+    vx = Math.max(0, Math.min(sw - vw, vx));
+    vy = Math.max(0, Math.min(sh - vh, vy));
+    return { vx, vy, vw, vh, scale: container.cw / vw };
+  }, [cur, container.cw, container.ch, pan, zoom]);
+
+  /* Reset pan/zoom when the crop changes. */
+  useEffectS3(() => { setPan({ dx: 0, dy: 0 }); setZoom(1); }, [curPath]);
 
   /* Navigation clears any in-progress draft. */
   function goto(n) {
     setDraftBox(null);
     setIdx(Math.max(0, Math.min(cropPaths.length - 1, n)));
+  }
+
+  /* ── Pan: drag on empty canvas (not on the bbox) moves the viewport. ── */
+  function startPan(e) {
+    if (!view || saving) return;
+    e.preventDefault();
+    panRef.current = { mx: e.clientX, my: e.clientY, pan };
+    const onMove = (ev) => {
+      const p = panRef.current; if (!p) return;
+      /* Drag right → image moves right → view origin moves left, hence the
+         negative sign. Convert screen-px delta to source-px via scale. */
+      setPan({
+        dx: p.pan.dx - (ev.clientX - p.mx) / view.scale,
+        dy: p.pan.dy - (ev.clientY - p.my) / view.scale,
+      });
+    };
+    const onUp = () => {
+      panRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  /* Wheel zoom, clamped 1×–8×. */
+  function onWheel(e) {
+    if (!view) return;
+    e.preventDefault();
+    setZoom((z) => Math.max(1, Math.min(8, z * (e.deltaY < 0 ? 1.15 : 1 / 1.15))));
   }
 
   /* ── Drag interactions ────────────────────────────────────────────────
@@ -323,8 +399,11 @@ function RedrawBoundary() {
         {/* Editor canvas */}
         <div className="editor-wrap grow" style={{ minWidth: 0 }}>
           <div ref={canvasRef} className="editor-canvas"
+               onMouseDown={(e) => { if (e.target === e.currentTarget || e.target.tagName === "IMG") startPan(e); }}
+               onWheel={onWheel}
                style={{ position: "relative", width: "100%", height: "100%",
-                        overflow: "hidden" }}>
+                        overflow: "hidden",
+                        cursor: panRef.current ? "grabbing" : "grab" }}>
             {view && <>
               <img src={"/api/file?path=" + encodeURIComponent(cur.source_path)}
                    alt="" style={imgStyle} draggable={false} />
@@ -343,7 +422,7 @@ function RedrawBoundary() {
                                                  fontFamily: "var(--mono)",
                                                  fontSize: 10,
                                                  pointerEvents: "none" }}>
-              auto-zoomed to packet {String(cur ? cur.packet_index : 0).padStart(2, "0")} · full-resolution source region
+              packet {String(cur ? cur.packet_index : 0).padStart(2, "0")} · drag to pan · scroll to zoom{zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}
             </span>
           </div>
         </div>
@@ -357,12 +436,13 @@ function RedrawBoundary() {
               <div style={{ height: 168, position: "relative" }}>
                 <ScanPreview rows={grid.rows} cols={grid.cols}
                   activeIndex={sibIndex >= 0 ? sibIndex : 0}
+                  flagged={miniFlags}
                   tag={cur ? cur.source_path.split(/[\\/]/).pop() : ""} />
               </div>
               <div className="hint" style={{ marginTop: 9 }}>
                 Editing crop <b style={{ color: "var(--text)" }}>
                   {String(cur ? cur.packet_index : 0).padStart(2, "0")}
-                </b> · highlighted box shows the current region within the full source scan.
+                </b> · cell colours reflect QC status (green = approved, red = flagged).
               </div>
             </div>
           </div>

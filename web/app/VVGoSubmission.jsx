@@ -34,6 +34,20 @@ const DEFAULT_SETTINGS = {
   vvgo_ocr_only:  false,
 };
 
+/* Extract a clean prompt name from whatever a stored/returned value is.
+   The VVGo /prompts items are dicts; older configs persisted the whole dict
+   as a string ("{'filename': 'X.yaml', 'name': ...}"). Pull the filename or
+   name out; if it doesn't look like a prompt name, fall back to the default. */
+function _cleanPromptName(v) {
+  if (typeof v !== "string" || !v) return DEFAULT_SETTINGS.vvgo_prompt;
+  const t = v.trim();
+  if (t.startsWith("{") || t.startsWith("[")) {
+    const m = t.match(/'(?:filename|name|prompt_ref)'\s*:\s*'([^']+)'/);
+    return m ? m[1] : DEFAULT_SETTINGS.vvgo_prompt;
+  }
+  return t;
+}
+
 /* ── Per-crop row in the submission table ───────────────────────────────── */
 function SubRow({ r }) {
   const st = r.status || "queued";
@@ -134,6 +148,10 @@ function VVGoSubmission() {
           const sep = session.outputDir.includes("\\") ? "\\" : "/";
           merged.vvgo_json_dir = session.outputDir.replace(/[\\/]+$/, "") + sep + "vvgo_json";
         }
+        /* Heal a prompt value persisted before the name-extraction fix: an old
+           config may hold a stringified dict ("{'author': ...}"). Pull the
+           filename/name out of it, or fall back to the default. */
+        merged.vvgo_prompt = _cleanPromptName(merged.vvgo_prompt);
         if (merged.vvgo_prompt && !knownPrompts.includes(merged.vvgo_prompt)) {
           setKnownPrompts([merged.vvgo_prompt, ...knownPrompts]);
         }
@@ -315,80 +333,79 @@ function VVGoSubmission() {
   return (
     <div className="submit">
 
-      {/* Header / controls — token, model, prompt, scope, Start */}
-      <div className="submit-top" style={{ flexWrap: "wrap" }}>
+      {/* Header / controls — token, model, prompt, scope, Start.
+          Single-row toolbar (no wrap) matching the QC toolbar. */}
+      <div className="submit-top">
 
-        <div className="row" style={{ gap: 16, flex: 1, minWidth: 0, flexWrap: "wrap" }}>
-
-          <div style={{ minWidth: 240, flex: "1 1 260px" }}>
-            <label className="label">API token</label>
-            <div className="input-row">
-              <input className="input" type={showToken ? "text" : "password"}
-                value={s.vvgo_token}
-                placeholder="vvgo_sk_…"
-                onChange={(e) => patchSetting("vvgo_token", e.target.value)} />
-              <button className="btn btn-icon" title={showToken ? "Hide" : "Show"}
-                onClick={() => setShowToken((v) => !v)}>
-                <Icon paths={ICONS.eye} />
-              </button>
-              <button className="btn btn-icon" title="Save (persist to config)"
-                onClick={saveSettings} style={savedFlash ? { color: "var(--green)" } : null}>
-                <Icon d={savedFlash ? ICONS.check : ICONS.download} />
-              </button>
-            </div>
+        <div className="st-field st-token">
+          <label className="label">API token</label>
+          <div className="input-row">
+            <input className="input" type={showToken ? "text" : "password"}
+              value={s.vvgo_token}
+              placeholder="vvgo_sk_…"
+              onChange={(e) => patchSetting("vvgo_token", e.target.value)} />
+            <button className="btn btn-icon" title={showToken ? "Hide" : "Show"}
+              onClick={() => setShowToken((v) => !v)}>
+              <Icon paths={ICONS.eye} />
+            </button>
+            <button className="btn btn-icon" title="Save (persist to config)"
+              onClick={saveSettings} style={savedFlash ? { color: "var(--green)" } : null}>
+              <Icon d={savedFlash ? ICONS.check : ICONS.download} />
+            </button>
           </div>
-
-          <div>
-            <label className="label">Model</label>
-            <div className="select-wrap" style={{ width: 260 }}>
-              <select className="input sans" value={s.vvgo_model}
-                onChange={(e) => patchSetting("vvgo_model", e.target.value)}>
-                {VVGO_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="label">Prompt</label>
-            <div className="input-row">
-              <div className="select-wrap" style={{ width: 220 }}>
-                <select className="input sans" value={s.vvgo_prompt}
-                  onChange={(e) => patchSetting("vvgo_prompt", e.target.value)}>
-                  {knownPrompts.map((p) => <option key={p} value={p}>{p}</option>)}
-                </select>
-              </div>
-              <button className="btn btn-sm" onClick={fetchPrompts}
-                disabled={fetchingPr || !s.vvgo_token.trim()}
-                title="Load the prompt list from the VVGo server">
-                {fetchingPr ? "…" : "Fetch"}
-              </button>
-            </div>
-          </div>
-
-          <div style={{ alignSelf: "flex-end" }}>
-            <div className="filterbar" style={{ flexWrap: "nowrap" }}>
-              <button className={`fchip ${scope === "approved" ? "on" : ""}`}
-                onClick={() => setScope("approved")}>
-                Approved<span className="fn">{approvedCount}</span>
-              </button>
-              <button className={`fchip ${scope === "all" ? "on" : ""}`}
-                onClick={() => setScope("all")}>
-                All<span className="fn">{crops.length}</span>
-              </button>
-            </div>
-          </div>
-
         </div>
 
-        <div className="row" style={{ gap: 10, alignItems: "flex-end" }}>
-          <button className="btn" onClick={() => setAdvOpen((v) => !v)}>
+        <div className="st-field st-model">
+          <label className="label">Model</label>
+          <div className="select-wrap">
+            <select className="input sans" value={s.vvgo_model}
+              onChange={(e) => patchSetting("vvgo_model", e.target.value)}>
+              {VVGO_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div className="st-field st-prompt">
+          <label className="label">Prompt</label>
+          <div className="input-row">
+            <div className="select-wrap" style={{ flex: 1, minWidth: 0 }}>
+              <select className="input sans" value={s.vvgo_prompt}
+                title={s.vvgo_prompt}
+                onChange={(e) => patchSetting("vvgo_prompt", e.target.value)}>
+                {knownPrompts.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <button className="btn btn-sm" onClick={fetchPrompts}
+              disabled={fetchingPr || !s.vvgo_token.trim()}
+              title="Load the prompt list from the VVGo server">
+              {fetchingPr ? "…" : "Fetch"}
+            </button>
+          </div>
+        </div>
+
+        <div className="st-field" style={{ flexShrink: 0 }}>
+          <label className="label">Scope</label>
+          <div className="filterbar" style={{ flexWrap: "nowrap" }}>
+            <button className={`fchip ${scope === "approved" ? "on" : ""}`}
+              onClick={() => setScope("approved")}>
+              Approved<span className="fn">{approvedCount}</span>
+            </button>
+            <button className={`fchip ${scope === "all" ? "on" : ""}`}
+              onClick={() => setScope("all")}>
+              All<span className="fn">{crops.length}</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="st-actions">
+          <button className="btn btn-sm" onClick={() => setAdvOpen((v) => !v)}>
             <Icon d={ICONS.filter} size={13} /> Advanced {advOpen ? "▴" : "▾"}
           </button>
-          <button className="btn btn-primary btn-lg"
+          <button className="btn btn-primary"
             onClick={startSubmission}
             disabled={!eligibleTotal && !running}>
             <Icon d={running ? ICONS.x : ICONS.send} size={15} />
-            {running ? "Cancel" : `Start Submission (${eligibleTotal})`}
+            {running ? "Cancel" : `Submit (${eligibleTotal})`}
           </button>
         </div>
       </div>

@@ -441,8 +441,10 @@
 }
 
 /* Bounding box overrides */
-.aesthetic-retro95 .bb-ok     polygon { stroke: #5E9E5A; fill: rgba(94,158,90,0.10); }
-.aesthetic-retro95 .bb-ok     text    { fill: #3D7A3A; }
+.aesthetic-retro95 .bb-ok     polygon { stroke: #9A8C70; fill: rgba(154,140,112,0.08); }
+.aesthetic-retro95 .bb-ok     text    { fill: #7A6A48; }
+.aesthetic-retro95 .bb-green  polygon { stroke: #5E9E5A; fill: rgba(94,158,90,0.18); }
+.aesthetic-retro95 .bb-green  text    { fill: #3D7A3A; }
 .aesthetic-retro95 .bb-red    polygon { stroke: #C84030; fill: rgba(200,64,48,0.12); }
 .aesthetic-retro95 .bb-red    text    { fill: #C84030; }
 .aesthetic-retro95 .bb-gold   polygon { stroke: #B07010; fill: rgba(176,112,16,0.12); }
@@ -748,3 +750,22 @@
 .aesthetic-retro95 .sd-divider { background: #C4A87E; }
 .aesthetic-retro95 .sd-reset { font-family: 'Nunito', sans-serif; }
 .aesthetic-retro95 .sd-footer { border-top: 1.5px solid #C4A87E; }
+
+/* ── Setup preview frame-nav — match the chunky cream/brown button look ── */
+.aesthetic-retro95 .lp-nav {
+  background: #FAF3E6;
+  border: 2px solid #2C1810;
+  border-radius: 100px;
+  box-shadow: var(--hard-shadow-sm);
+  padding: 3px 8px;
+}
+.aesthetic-retro95 .lp-arrow {
+  color: #2C1810;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  border-radius: 100px;
+}
+.aesthetic-retro95 .lp-arrow:hover:not(:disabled) { background: #EEE2C6; }
+.aesthetic-retro95 .lp-count { color: #2C1810; font-family: 'Courier Prime', monospace; }
+.aesthetic-retro95 .lp-end { color: rgba(44, 24, 16, 0.25); }
+.aesthetic-retro95 .lp-end.on { color: #E76F51; }

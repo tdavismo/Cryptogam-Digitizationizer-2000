@@ -440,6 +440,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             window.__CDZ_SESSION = {
               outputDir, flagged: evt.flagged, sources: evt.total, packets,
               settings: buildSettings(),
+              gridRows: rows, gridCols: cols,
             };
           }
         },

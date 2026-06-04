@@ -368,8 +368,10 @@
 }
 
 /* Bounding-box overlay colour overrides */
-.aesthetic-vaporwave .bb-ok     polygon { stroke: #5EFCC6; fill: rgba(94, 252, 198, 0.08); }
-.aesthetic-vaporwave .bb-ok     text    { fill: #5EFCC6; }
+.aesthetic-vaporwave .bb-ok     polygon { stroke: #9C7BBE; fill: rgba(156, 123, 190, 0.08); }
+.aesthetic-vaporwave .bb-ok     text    { fill: #B89DD8; }
+.aesthetic-vaporwave .bb-green  polygon { stroke: #5EFCC6; fill: rgba(94, 252, 198, 0.18); }
+.aesthetic-vaporwave .bb-green  text    { fill: #5EFCC6; }
 .aesthetic-vaporwave .bb-red    polygon { stroke: #FF7AC8; fill: rgba(255, 122, 200, 0.18); }
 .aesthetic-vaporwave .bb-red    text    { fill: #FF7AC8; }
 .aesthetic-vaporwave .bb-gold   polygon { stroke: #FFD93D; fill: rgba(255, 217, 61, 0.16); }
@@ -635,3 +637,14 @@
 .aesthetic-vaporwave .sd-thumb { background: #FFEBFC; }
 .aesthetic-vaporwave .sd-footer { border-top-color: rgba(85, 52, 148, 0.5); }
 .aesthetic-vaporwave .sd-divider { background: rgba(85, 52, 148, 0.5); }
+
+/* ── Setup preview frame-nav — neon-trim pill to match the vaporwave chrome ── */
+.aesthetic-vaporwave .lp-nav {
+  background: rgba(15, 4, 28, 0.72);
+  border: 1px solid rgba(255, 106, 213, 0.5);
+  box-shadow: 0 0 12px rgba(255, 62, 170, 0.25);
+}
+.aesthetic-vaporwave .lp-arrow { color: #FF6AD5; }
+.aesthetic-vaporwave .lp-arrow:hover:not(:disabled) { background: rgba(255, 106, 213, 0.18); }
+.aesthetic-vaporwave .lp-count { color: #E6D9FF; }
+.aesthetic-vaporwave .lp-end.on { color: #5EE7FF; }

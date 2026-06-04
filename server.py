@@ -574,6 +574,22 @@ async def redraw(req: RedrawRequest):
 
 VVGO_SERVER_URL     = "https://vouchervision-go-738307415303.us-central1.run.app/"
 VVGO_DEFAULT_PROMPT = "SLTPvM_default.yaml"
+
+
+def _vvgo_auth_headers(token: str) -> dict:
+    """
+    Build the auth header VVGo expects.  The official VVGo client distinguishes
+    two credential types (VoucherVision.py):
+      * a Firebase ID token — a JWT, which contains dots and is long
+        (>100 chars) — sent as  Authorization: Bearer <token>
+      * a plain API key — sent as  X-API-Key: <token>
+    Sending Bearer for an API key returns 401, which is the bug we hit on
+    /process. /prompts happened to accept either, masking the issue.
+    """
+    token = (token or "").strip()
+    if "." in token and len(token) > 100:
+        return {"Authorization": f"Bearer {token}"}
+    return {"X-API-Key": token}
 VVGO_MODELS = [
     "gemini-3.1-flash-lite-preview",   # fast, unlimited — default
     "gemini-3-flash-preview",          # fast, good quality
@@ -645,19 +661,42 @@ async def vvgo_prompts(token: str = Query(..., description="VVGo bearer token"))
     def _do():
         r = requests.get(
             f"{VVGO_SERVER_URL}prompts",
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_vvgo_auth_headers(token),
             timeout=20,
         )
         r.raise_for_status()
         data = r.json()
+
+        def _name_of(item):
+            """Pull a clean prompt name out of whatever shape an item takes."""
+            if isinstance(item, str):
+                return item
+            if isinstance(item, dict):
+                for k in ("filename", "name", "prompt", "id", "title", "file"):
+                    v = item.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+            return None
+
         if isinstance(data, list):
-            names = [str(p) for p in data if p]
+            names = [n for n in (_name_of(p) for p in data) if n]
         elif isinstance(data, dict):
-            names = [str(p) for p in
-                     data.get("prompts", data.get("names", [])) if p]
+            # Either {"prompts": [...]} / {"names": [...]} or a name-keyed map.
+            inner = data.get("prompts", data.get("names"))
+            if isinstance(inner, list):
+                names = [n for n in (_name_of(p) for p in inner) if n]
+            elif isinstance(inner, dict):
+                names = [str(k) for k in inner.keys()]
+            else:
+                names = [str(k) for k in data.keys()]
         else:
             names = []
-        return names or [VVGO_DEFAULT_PROMPT]
+        # De-dup while preserving order
+        seen, uniq = set(), []
+        for n in names:
+            if n not in seen:
+                seen.add(n); uniq.append(n)
+        return uniq or [VVGO_DEFAULT_PROMPT]
 
     try:
         names = await asyncio.to_thread(_do)
@@ -732,7 +771,7 @@ async def vvgo_submit(body: dict):
             with p.open("rb") as fh:
                 r = requests.post(
                     f"{VVGO_SERVER_URL}process",
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers=_vvgo_auth_headers(token),
                     files={"file": (p.name, fh, "image/jpeg")},
                     data=post_data,
                     timeout=180,
