@@ -125,6 +125,17 @@ function RedrawBoundary() {
     () => manifest ? Object.keys(manifest.crops).sort() : [],
     [manifest]);
 
+  /* When QC hands off a specific crop (RS.path), resolve it to *this* list's
+     index once the manifest is loaded — robust to any sort-order difference
+     between the two screens. Consume RS.path so it doesn't re-fire on later
+     manifest reloads. */
+  useEffectS3(() => {
+    if (!cropPaths.length || !RS.path) return;
+    const i = cropPaths.indexOf(RS.path);
+    RS.path = null;
+    if (i >= 0) setIdx(i);
+  }, [cropPaths]);
+
   const curPath = cropPaths[Math.max(0, Math.min(idx, cropPaths.length - 1))];
   const cur     = curPath && manifest ? manifest.crops[curPath] : null;
 

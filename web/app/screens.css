@@ -223,6 +223,12 @@
   font-family: var(--mono); font-size: 10px; color: var(--text); opacity: 0.85;
   background: rgba(0,0,0,0.45); padding: 1px 6px; border-radius: 3px;
   letter-spacing: 0.04em; pointer-events: none; }
+/* "submitted to VVGo" badge, top-right of a crop thumbnail */
+.thumb-submitted { position: absolute; top: 6px; right: 6px;
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  color: #fff; background: rgba(60,120,200,0.85);
+  padding: 2px 6px; border-radius: 3px; letter-spacing: 0.03em;
+  pointer-events: none; }
 .thumb-foot { display: flex; align-items: center; justify-content: space-between;
   padding: 7px 9px; border-top: 1px solid var(--border); gap: 8px; }
 .thumb-foot .mono { flex: 1; min-width: 0; }
@@ -253,6 +259,37 @@
   border-radius: var(--radius-lg); color: var(--text-3); }
 .qc-empty-title { font-size: 15px; font-weight: 600; color: var(--text-2); }
 .qc-empty-sub { font-size: 12.5px; line-height: 1.5; }
+
+/* ── JSON preview modal (VVGo "View") ───────────────────────────────────── */
+.json-modal-backdrop {
+  position: fixed; inset: 0; z-index: 400;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center;
+  padding: 32px;
+}
+.json-modal {
+  width: min(640px, 92vw); max-height: 82vh;
+  display: flex; flex-direction: column;
+  background: var(--surface-1); border: 1px solid var(--border-2);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.json-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2); flex-shrink: 0;
+}
+.json-modal-body { padding: 16px; overflow-y: auto; }
+.json-fields { margin-bottom: 12px; }
+.json-fields .mv { font-size: 12px; }
+.json-raw {
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--text-2); background: var(--well);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; margin-top: 6px; overflow-x: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
 .meta-grid { display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: 12px; }
 .mk { color: var(--text-3); }
 .mv { color: var(--text); font-family: var(--mono); font-size: 11.5px; text-align: right; }
@@ -264,6 +301,7 @@
 .callout > span { flex: 1; min-width: 0; }
 .callout.red { background: var(--red-soft); border: 1px solid var(--red-line); color: var(--red-bright); }
 .callout.gold { background: var(--gold-soft); border: 1px solid rgba(255,199,42,0.4); color: var(--gold); }
+.callout.blue { background: var(--blue-soft); border: 1px solid var(--blue); color: var(--blue); }
 
 /* Flag-reason textarea inside the red callout */
 .flag-reason {

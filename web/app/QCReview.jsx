@@ -7,6 +7,11 @@ const { useState: useStateS2, useEffect: useEffectS2, useMemo: useMemoS2 } = Rea
    Switching tabs preserves the user's review decisions. */
 if (!window.__CDZ_QC_STATE) window.__CDZ_QC_STATE = { overrides: {}, notes: {}, selectedPath: null };
 const QC = window.__CDZ_QC_STATE;
+/* `submitted` is the set of crop paths already sent to VVGo successfully —
+   written by the VVGo screen, read here to badge crops and let the user avoid
+   duplicate processing. Stored as a plain object (path → true) so it survives
+   tab switches alongside the other QC state. */
+if (!QC.submitted) QC.submitted = {};
 
 /* ── Filters ─────────────────────────────────────────────────────────────
    Counts are computed live from the current crop list. */
@@ -28,7 +33,7 @@ const STATUS_RING = {
 /* ── Card — replaces the synthetic Placeholder with the real packet image.
    We keep the exact wrapper structure (.thumb / .thumb-ph / .thumb-foot)
    so every skin's CSS overrides keep applying without any changes. */
-function CropThumb({ c, selected, multi, onClick }) {
+function CropThumb({ c, selected, multi, submitted, onClick }) {
   const ring = STATUS_RING[c.status] || "neutral";
   const cls  = ["thumb", ring,
                 selected ? "sel"   : "",
@@ -44,6 +49,7 @@ function CropThumb({ c, selected, multi, onClick }) {
           src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path)}
           alt={c.name} />
         <span className="thumb-num">{c.idxLabel}</span>
+        {submitted && <span className="thumb-submitted" title="Submitted to VVGo">☁ sent</span>}
       </div>
       <div className="thumb-foot">
         <span className="mono"
@@ -80,6 +86,19 @@ function QCReview() {
   const [filter,    setFilter]    = useStateS2("all");
   const [selPath,   setSelPath]   = useStateS2(QC.selectedPath);
   const [multiSel,  setMultiSel]  = useStateS2(() => new Set(QC.multi || []));
+  /* Mirror of QC.submitted (path → true), as a Set, so the grid badges and the
+     detail "clear" action re-render. Re-synced from the shared bag on every
+     mount — QCReview is conditionally mounted, so tabbing back here after a
+     VVGo submission picks up the newly-submitted crops. */
+  const [submitted, setSubmitted] = useStateS2(() => new Set(Object.keys(QC.submitted || {})));
+  useEffectS2(() => {
+    setSubmitted(new Set(Object.keys(QC.submitted || {})));
+  }, []);
+
+  function clearSubmitted(path) {
+    if (QC.submitted) delete QC.submitted[path];
+    setSubmitted(new Set(Object.keys(QC.submitted || {})));
+  }
 
   /* Load real crops on mount / when the batch output dir changes. */
   useEffectS2(() => {
@@ -155,6 +174,17 @@ function QCReview() {
       return next;
     });
   }
+  /* Toggle: pressing the same status again clears it back to unreviewed.
+     Lets a double-press of Approve remove the approval. */
+  function toggleStatus(path, status) {
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (next[path] === status) delete next[path];
+      else next[path] = status;
+      QC.overrides = next;
+      return next;
+    });
+  }
   function setNote(path, note) {
     setNotes((prev) => {
       const next = { ...prev };
@@ -203,19 +233,12 @@ function QCReview() {
   }
 
   function openRedrawFor(c) {
-    /* Hand off the selected crop to the Redraw screen.  Both screens share
-       the same manifest, sorted lexicographically; we pre-set RS.idx so the
-       Redraw view opens on this crop, then trigger a tab switch via the
-       App's setTab — exposed on window for cross-screen navigation. */
-    const allPaths = Object.keys(window.__CDZ_REDRAW_MANIFEST_PATHS || {})
-      .concat([c.path]); // fallback if redraw hasn't mounted yet
-    /* RS lives in RedrawBoundary.jsx; index is the sorted position of the
-       crop path within the manifest. We compute by sorting the QC crops in
-       the same order Redraw does. */
-    const sorted = [...crops].sort((a, b) => a.path.localeCompare(b.path));
-    const i = sorted.findIndex((x) => x.path === c.path);
+    /* Hand off the selected crop to the Redraw screen by *path*, not index.
+       Computing an index here is fragile — QC and Redraw could sort the crop
+       list differently, opening the wrong image. Redraw resolves RS.path to
+       its own index against the manifest it actually loaded. */
     if (!window.__CDZ_REDRAW_STATE) window.__CDZ_REDRAW_STATE = { idx: 0 };
-    window.__CDZ_REDRAW_STATE.idx = i >= 0 ? i : 0;
+    window.__CDZ_REDRAW_STATE.path = c.path;
     if (typeof window.__CDZ_SET_TAB === "function") {
       window.__CDZ_SET_TAB("redraw");
     }
@@ -302,6 +325,7 @@ function QCReview() {
                 <CropThumb key={c.path} c={c}
                   selected={cur && cur.path === c.path}
                   multi={multiSel.has(c.path)}
+                  submitted={submitted.has(c.path)}
                   onClick={selectCrop} />
               )}
             </div>
@@ -340,6 +364,18 @@ function QCReview() {
                     <span>Source image was flagged: likely two merged packets in this crop.</span>
                   </div>
                 }
+                {submitted.has(cur.path) &&
+                  <div className="callout blue" style={{ alignItems: "center" }}>
+                    <span className="row" style={{ gap: 8, flex: 1 }}>
+                      <span>☁</span> Submitted to VVGo
+                    </span>
+                    <button className="btn btn-sm btn-ghost" style={{ flexShrink: 0 }}
+                      onClick={() => clearSubmitted(cur.path)}
+                      title="Allow this crop to be re-submitted">
+                      Clear
+                    </button>
+                  </div>
+                }
 
                 <div className="meta-grid">
                   <span className="mk">Source image</span><span className="mv">{cur.src}</span>
@@ -352,12 +388,15 @@ function QCReview() {
                 </div>
 
                 <div className="detail-actions">
-                  <button className="btn btn-primary" style={{ flex: 1 }}
-                    onClick={() => setStatus(cur.path, "approved")}>
-                    <Icon d={ICONS.check} size={14} /> Approve
+                  <button className={`btn btn-primary${cur.status === "approved" ? " active" : ""}`}
+                    style={{ flex: 1 }}
+                    title={cur.status === "approved" ? "Press again to un-approve" : "Approve"}
+                    onClick={() => toggleStatus(cur.path, "approved")}>
+                    <Icon d={ICONS.check} size={14} /> {cur.status === "approved" ? "Approved ✓" : "Approve"}
                   </button>
-                  <button className="btn"
-                    onClick={() => setStatus(cur.path, "flagged")}>
+                  <button className={`btn${cur.status === "flagged" ? " active" : ""}`}
+                    title={cur.status === "flagged" ? "Press again to un-flag" : "Flag"}
+                    onClick={() => toggleStatus(cur.path, "flagged")}>
                     <Icon paths={ICONS.flag} size={14} /> Flag
                   </button>
                   <button className="btn"

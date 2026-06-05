@@ -49,7 +49,7 @@ function _cleanPromptName(v) {
 }
 
 /* ── Per-crop row in the submission table ───────────────────────────────── */
-function SubRow({ r }) {
+function SubRow({ r, onView }) {
   const st = r.status || "queued";
   return (
     <div className={`subrow ${st}`}>
@@ -68,18 +68,72 @@ function SubRow({ r }) {
       </div>
       <div className="subrow-act">
         {st === "complete" && r.json_path &&
-          <a className="btn btn-sm btn-ghost"
-             href={"/api/file?path=" + encodeURIComponent(r.json_path).replace(/%2F/g,'/')}
-             target="_blank" rel="noopener"
-             title="Open JSON output">
+          <button className="btn btn-sm btn-ghost"
+             onClick={() => onView(r.json_path)}
+             title="Preview JSON output">
             <Icon paths={ICONS.eye} size={13} /> View
-          </a>
+          </button>
         }
         {st === "error" &&
           <button className="btn btn-sm" onClick={() => r.onRetry && r.onRetry(r)}>
             <Icon paths={ICONS.retry} size={13} /> Retry
           </button>
         }
+      </div>
+    </div>);
+}
+
+/* ── JSON preview modal ──────────────────────────────────────────────────
+   Fetches /api/json and renders the record: a friendly key/value table for
+   the parsed fields plus the raw JSON in a scrollable pre. Replaces the old
+   "open in a new tab" behaviour that made the browser try to render JSON as
+   an image. */
+function JsonModal({ path, onClose }) {
+  const [state, setState] = useStateS4({ loading: true, data: null, err: null, name: "" });
+
+  useEffectS4(() => {
+    let alive = true;
+    fetch("/api/json?path=" + encodeURIComponent(path))
+      .then((r) => r.ok ? r.json() : r.json().then((j) => Promise.reject(j.detail || r.statusText)))
+      .then((j) => alive && setState({ loading: false, data: j.data, err: null, name: j.name }))
+      .catch((e) => alive && setState({ loading: false, data: null, err: String(e), name: "" }));
+    return () => { alive = false; };
+  }, [path]);
+
+  /* Flatten the most useful transcription fields. VVGo records usually nest the
+     parsed values under formatted_json / ocr; surface those when present. */
+  const record = state.data && (
+    state.data.formatted_json || state.data.ocr || state.data
+  );
+  const rows = record && typeof record === "object" && !Array.isArray(record)
+    ? Object.entries(record).filter(([, v]) => v !== null && v !== "" && typeof v !== "object")
+    : [];
+
+  return (
+    <div className="json-modal-backdrop" onMouseDown={onClose}>
+      <div className="json-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="json-modal-head">
+          <span className="panel-title">{state.name || "JSON record"}</span>
+          <button className="sd-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="json-modal-body">
+          {state.loading && <div className="hint">Loading…</div>}
+          {state.err && <div className="qc-msg err">⚠ {state.err}</div>}
+          {!state.loading && !state.err && <>
+            {rows.length > 0 &&
+              <div className="meta-grid json-fields">
+                {rows.map(([k, v]) => <React.Fragment key={k}>
+                  <span className="mk">{k}</span>
+                  <span className="mv" style={{ textAlign: "left" }}>{String(v)}</span>
+                </React.Fragment>)}
+              </div>
+            }
+            <details open={rows.length === 0}>
+              <summary className="hint" style={{ cursor: "pointer", marginTop: 8 }}>Raw JSON</summary>
+              <pre className="json-raw">{JSON.stringify(state.data, null, 2)}</pre>
+            </details>
+          </>}
+        </div>
       </div>
     </div>);
 }
@@ -114,6 +168,7 @@ function VVGoSubmission() {
 
   /* UI state */
   const [scope,        setScope]      = useStateS4(VV.scope);   // "approved" | "all"
+  const [skipSubmitted, setSkipSubmitted] = useStateS4(VV.skipSubmitted !== false); // default on
   const [advOpen,      setAdvOpen]    = useStateS4(VV.advOpen);
   const [showToken,    setShowToken]  = useStateS4(false);
   const [savedFlash,   setSavedFlash] = useStateS4(false);
@@ -123,6 +178,7 @@ function VVGoSubmission() {
   /* Submission state */
   const [running, setRunning] = useStateS4(false);
   const [rows,    setRows]    = useStateS4(VV.rows);   // path → {status, ...}
+  const [viewJson, setViewJson] = useStateS4(null);    // json_path being previewed
   const abortRef = useRefS4(null);
 
   /* Mirror persisted bits into the global bag whenever they change. */
@@ -172,12 +228,18 @@ function VVGoSubmission() {
       .catch((e) => setLoadErr(String(e)));
   }, [session && session.outputDir]);
 
-  /* Scope → which crop paths are eligible for submission. */
+  /* Scope → which crop paths are eligible for submission. "Skip submitted"
+     drops crops already sent to VVGo (QC.submitted) so a re-run doesn't
+     duplicate-process them; the user can clear a crop's submitted tag in QC
+     to re-include it. */
   const cropsScoped = useMemoS4(() => {
-    if (scope === "all") return crops;
-    const ov = qcState.overrides || {};
-    return crops.filter((c) => ov[c.path] === "approved");
-  }, [crops, scope]);
+    const sub = qcState.submitted || {};
+    let list = scope === "all"
+      ? crops
+      : crops.filter((c) => (qcState.overrides || {})[c.path] === "approved");
+    if (skipSubmitted) list = list.filter((c) => !sub[c.path]);
+    return list;
+  }, [crops, scope, skipSubmitted]);
 
   /* Counters derived from the live rows map. */
   const counts = useMemoS4(() => {
@@ -295,6 +357,12 @@ function VVGoSubmission() {
           if (!line) continue;
           const evt = JSON.parse(line.slice(5).trim());
           if (evt.type === "progress") {
+            /* Record a successful submission so QC can badge it and the user
+               can skip re-submitting. Shared QC state, keyed by crop path. */
+            if (evt.ok && evt.path && window.__CDZ_QC_STATE) {
+              if (!window.__CDZ_QC_STATE.submitted) window.__CDZ_QC_STATE.submitted = {};
+              window.__CDZ_QC_STATE.submitted[evt.path] = true;
+            }
             setRows((prev) => ({
               ...prev,
               [evt.path]: {
@@ -325,6 +393,7 @@ function VVGoSubmission() {
     { path: c.path, name: c.name, stem: c.stem, status: "queued" });
 
   const approvedCount = Object.values(qcState.overrides || {}).filter((v) => v === "approved").length;
+  const submittedCount = Object.keys(qcState.submitted || {}).length;
   const eligibleTotal = cropsScoped.length;
   const pctComplete   = eligibleTotal ? (counts.complete   / eligibleTotal) * 100 : 0;
   const pctSubmitting = eligibleTotal ? (counts.submitted  / eligibleTotal) * 100 : 0;
@@ -393,6 +462,11 @@ function VVGoSubmission() {
             <button className={`fchip ${scope === "all" ? "on" : ""}`}
               onClick={() => setScope("all")}>
               All<span className="fn">{crops.length}</span>
+            </button>
+            <button className={`fchip ${skipSubmitted ? "on" : ""}`}
+              title="Exclude crops already submitted to VVGo"
+              onClick={() => { const v = !skipSubmitted; VV.skipSubmitted = v; setSkipSubmitted(v); }}>
+              Skip sent<span className="fn">{submittedCount}</span>
             </button>
           </div>
         </div>
@@ -521,10 +595,12 @@ function VVGoSubmission() {
                   : "No crops in the current batch."}
               </div>
             }
-            {visibleRows.map((r) => <SubRow key={r.path} r={r} />)}
+            {visibleRows.map((r) => <SubRow key={r.path} r={r} onView={setViewJson} />)}
           </div>
         </div>
       </div>
+
+      {viewJson && <JsonModal path={viewJson} onClose={() => setViewJson(null)} />}
     </div>);
 }
 

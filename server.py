@@ -31,13 +31,14 @@ import concurrent.futures
 import csv
 import json
 import mimetypes
+import re
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 import requests
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -288,15 +289,30 @@ async def fix(req: FixRequest):
 # Endpoint 4: GET /api/crops
 # ---------------------------------------------------------------------------
 
+def _is_crop_file(p: Path) -> bool:
+    """
+    True for files this tool produced as packet crops, so QC never ingests a
+    stray raw source image that happens to share the output folder.
+
+    Batch crops are named  <stem>_packet_NN.ext
+    Re-segment / bisect outputs keep that base and append a letter:
+                           <stem>_packet_NNa.ext  (regex tolerant of suffix)
+    """
+    return bool(re.search(r"_packet_\d+", p.stem))
+
+
 @app.get("/api/crops", summary="List crop images in an output directory", tags=["Gallery"])
 async def list_crops(output_dir: str = Query(..., description="Path to crops folder")):
-    """Metadata for every image in output_dir, sorted by name. Populates the QC gallery."""
+    """
+    Metadata for every *packet crop* in output_dir, sorted by name. Raw source
+    images are excluded (see _is_crop_file) so they can't leak into QC review.
+    """
     d = Path(output_dir)
     if not d.is_dir():
         raise HTTPException(404, f"Directory not found: {d}")
     crops = sorted(
         p for p in d.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and _is_crop_file(p)
     )
     return {
         "output_dir": str(d),
@@ -333,6 +349,11 @@ async def list_images(input_dir: str = Query(..., description="Path to source im
 # Endpoint 6: GET /api/file  — stream a local image file to the browser
 # ---------------------------------------------------------------------------
 
+# Encoded-bytes cache for the EXIF-oriented /api/file path, keyed by
+# (path, mtime_ns, auto_portrait). Bounded in the handler.
+_ORIENTED_CACHE: dict = {}
+
+
 @app.get("/api/file", summary="Serve a local image file", tags=["Gallery"])
 async def serve_file(
     path: str = Query(..., description="Absolute path to an image file"),
@@ -341,6 +362,7 @@ async def serve_file(
                        "(default); 0 = serve raw file"),
     auto_portrait: int = Query(
         0, description="1 = also rotate landscape→portrait"),
+    request_if_none_match: str = Header(None, alias="If-None-Match"),
 ):
     """
     Stream one image file from disk for thumbnails / previews.
@@ -363,24 +385,65 @@ async def serve_file(
     if not oriented:
         return FileResponse(str(p))
 
-    def _encode() -> bytes:
-        bgr = _imread_oriented(p, auto_portrait=bool(auto_portrait))
-        # Match the source's compression style: JPEG for jpeg, PNG otherwise.
-        ext = ".jpg" if p.suffix.lower() in (".jpg", ".jpeg") else ".png"
-        ok, buf = cv2.imencode(ext, bgr,
-            [int(cv2.IMWRITE_JPEG_QUALITY), 88] if ext == ".jpg" else [])
-        if not ok:
-            raise RuntimeError("encode failed")
-        return buf.tobytes()
+    # Cache the EXIF-normalised encode keyed by (path, mtime, flags). The
+    # Redraw editor reloads the same multi-MB source every time the user steps
+    # between crops of one scan; without this each switch re-decoded + re-
+    # encoded it, which was the visible lag. The mtime in the key means an
+    # edited source still busts the cache.
+    mtime = p.stat().st_mtime_ns
+    ckey = (str(p), mtime, bool(auto_portrait))
+    data = _ORIENTED_CACHE.get(ckey)
+    if data is None:
+        def _encode() -> bytes:
+            bgr = _imread_oriented(p, auto_portrait=bool(auto_portrait))
+            # Match the source's compression style: JPEG for jpeg, PNG otherwise.
+            ext = ".jpg" if p.suffix.lower() in (".jpg", ".jpeg") else ".png"
+            ok, buf = cv2.imencode(ext, bgr,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 88] if ext == ".jpg" else [])
+            if not ok:
+                raise RuntimeError("encode failed")
+            return buf.tobytes()
+        try:
+            data = await asyncio.to_thread(_encode)
+        except Exception:
+            # Fall back to raw bytes — better to show something than 500
+            return FileResponse(str(p))
+        # Bounded cache: drop oldest when full so a huge batch can't grow it
+        # without limit (sources are a few MB each; keep ~24).
+        if len(_ORIENTED_CACHE) >= 24:
+            _ORIENTED_CACHE.pop(next(iter(_ORIENTED_CACHE)))
+        _ORIENTED_CACHE[ckey] = data
 
-    try:
-        data = await asyncio.to_thread(_encode)
-    except Exception:
-        # Fall back to raw bytes — better to show something than 500
-        return FileResponse(str(p))
     media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+    # ETag lets the browser skip re-downloading on subsequent loads of the
+    # same crop; the encode itself is already cached above for server-side hits.
+    etag = f'"{abs(hash(ckey))}"'
+    if request_if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag,
+                        "Cache-Control": "private, max-age=300"})
     return Response(content=data, media_type=media,
-                    headers={"Cache-Control": "no-cache"})
+                    headers={"ETag": etag,
+                             "Cache-Control": "private, max-age=300"})
+
+
+@app.get("/api/json", summary="Read a JSON file from disk", tags=["Gallery"])
+async def serve_json(path: str = Query(..., description="Absolute path to a .json file")):
+    """
+    Return the parsed contents of a local .json file for the in-app previewer.
+    Used by the VVGo submission table's "View" action so the user sees the
+    transcription record inside the app instead of the browser trying to render
+    a JSON file as an image.
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(404, f"File not found: {p}")
+    if p.suffix.lower() != ".json":
+        raise HTTPException(415, f"Not a JSON file: {p.name}")
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(422, f"Could not parse JSON: {exc}")
+    return {"path": str(p), "name": p.name, "data": data}
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +840,12 @@ async def vvgo_submit(body: dict):
                     timeout=180,
                 )
             r.raise_for_status()
-            out_path = json_dir / f"{p.stem}.json"
+            # VoucherVision Editor ignores files whose names start with "_"
+            # (it treats leading-underscore entries as hidden), and our crops
+            # are named "_DSC0002_packet_01". Strip leading underscores from
+            # the JSON filename so the Editor lists the folder correctly.
+            json_stem = p.stem.lstrip("_") or p.stem
+            out_path = json_dir / f"{json_stem}.json"
             out_path.write_text(
                 json.dumps(r.json(), indent=2, ensure_ascii=False),
                 encoding="utf-8",
