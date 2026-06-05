@@ -324,6 +324,91 @@ async def list_crops(output_dir: str = Query(..., description="Path to crops fol
     }
 
 
+@app.get("/api/session-from-folder",
+         summary="Reconstruct a review session from a processed output folder",
+         tags=["Gallery"])
+async def session_from_folder(output_dir: str = Query(..., description="Existing PACKETS output folder")):
+    """
+    Rebuild the session object the frontend normally gets from a fresh batch,
+    so a user can re-open a previously-segmented folder and go straight to QC /
+    Redraw / VVGo without re-running segmentation.
+
+    Reads packet_manifest.csv to recover per-source crop dimensions, re-derives
+    the oversize / zero-detection flags with the same flag_results() logic the
+    batch uses, and returns:
+      { outputDir, sources, packets, flagged: [...], gridRows, gridCols,
+        hasManifest }
+    The flagged[] entries match the batch SSE 'done' event shape exactly.
+    """
+    d = Path(output_dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"Directory not found: {d}")
+
+    crops = [p for p in d.iterdir()
+             if p.is_file() and p.suffix.lower() in IMAGE_EXTS and _is_crop_file(p)]
+    if not crops:
+        raise HTTPException(422, "No packet crops found in that folder.")
+
+    mf = d / "packet_manifest.csv"
+
+    def _build():
+        # Group crop dimensions by source image. Prefer the manifest (exact
+        # original dims); fall back to reading each crop file if absent.
+        by_source: dict = {}          # source_name → list[(Path, w, h)]
+        have_manifest = mf.is_file()
+        if have_manifest:
+            with mf.open("r", encoding="utf-8", newline="") as fh:
+                for row in csv.DictReader(fh):
+                    out_crop = Path(row.get("output_crop", ""))
+                    # Manifest may reference an old absolute path; re-home onto
+                    # this folder by filename so a moved folder still works.
+                    local = d / out_crop.name
+                    if not local.is_file():
+                        continue
+                    src_name = Path(row.get("source_image", out_crop.stem)).name
+                    try:
+                        w = int(row["bbox_w"]); h = int(row["bbox_h"])
+                    except Exception:
+                        # No dims in manifest row — read the crop file.
+                        im = cv2.imread(str(local))
+                        if im is None:
+                            continue
+                        h, w = im.shape[:2]
+                    by_source.setdefault(src_name, []).append((local, w, h))
+        else:
+            # No manifest: infer the source group from the crop stem prefix
+            # (everything before _packet_) and read dims off each file.
+            for p in crops:
+                m = re.match(r"^(.*)_packet_\d+", p.stem)
+                src_name = (m.group(1) if m else p.stem) + ".src"
+                im = cv2.imread(str(p))
+                if im is None:
+                    continue
+                h, w = im.shape[:2]
+                by_source.setdefault(src_name, []).append((p, w, h))
+
+        results = [
+            ImageResult(path=Path(src), count=len(infos), crop_info=infos)
+            for src, infos in by_source.items()
+        ]
+        flagged = [r for r in flag_results(results) if r.flag]
+        packets = sum(len(infos) for infos in by_source.values())
+        return have_manifest, len(by_source), packets, flagged
+
+    try:
+        have_manifest, sources, packets, flagged = await asyncio.to_thread(_build)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not read folder: {exc}")
+
+    return {
+        "outputDir": str(d),
+        "sources": sources,
+        "packets": packets,
+        "hasManifest": have_manifest,
+        "flagged": [_result_to_dict(r) for r in flagged],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Endpoint 5: GET /api/images
 # ---------------------------------------------------------------------------

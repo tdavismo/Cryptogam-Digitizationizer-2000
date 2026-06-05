@@ -374,6 +374,38 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
     };
   }
 
+  /* Open a previously-segmented output folder: rebuild the session from its
+     crops + manifest (no re-run) and jump straight to QC for review/submission.
+     Lets a user finish reviewing or submit crops in a later session. */
+  async function openProcessed() {
+    if (running) return;
+    const dir = await _pickFolder("Open a processed packets folder", out || folder);
+    if (!dir) return;
+    setLogLines([{ t: _now(), lvl: "info", m: `Opening processed folder: ${dir}` }]);
+    try {
+      const r = await fetch("/api/session-from-folder?output_dir=" + encodeURIComponent(dir));
+      const j = await (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.detail || r.statusText)));
+      window.__CDZ_SESSION = {
+        outputDir: j.outputDir,
+        flagged: j.flagged || [],
+        sources: j.sources,
+        packets: j.packets,
+        settings: buildSettings(),
+        gridRows: rows, gridCols: cols,
+      };
+      setOut(j.outputDir);
+      const flagN = (j.flagged || []).length;
+      addLog("ok",
+        `Loaded ${j.packets} crops from ${j.sources} source image(s)` +
+        (j.hasManifest ? "" : " (no manifest — Redraw unavailable)") +
+        (flagN ? ` · ${flagN} flagged` : ""));
+      setSummary(`${j.packets} crops · ${flagN} flagged`);
+      if (typeof window.__CDZ_SET_TAB === "function") window.__CDZ_SET_TAB("qc");
+    } catch (e) {
+      addLog("err", "Could not open folder: " + e);
+    }
+  }
+
   async function run() {
     if (running) {                       // acts as Stop while a batch streams
       if (abortRef.current) abortRef.current.abort();
@@ -581,10 +613,15 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             }
           </div>
 
-          <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch", justifyContent: "flex-end" }}>
             <button className="btn btn-primary btn-lg" style={{ width: "100%" }}
               onClick={run}>
               <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
+            </button>
+            <button className="btn btn-sm" style={{ width: "100%" }}
+              onClick={openProcessed} disabled={running}
+              title="Review or submit crops from a folder segmented earlier">
+              <Icon d={ICONS.folder} size={13} /> Open processed…
             </button>
           </div>
 
