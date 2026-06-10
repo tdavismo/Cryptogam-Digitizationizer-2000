@@ -394,6 +394,22 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
         gridRows: rows, gridCols: cols,
       };
       setOut(j.outputDir);
+      /* Auto-populate the VVGo JSON output folder from the folder just opened,
+         so the audit reads receipts from <this folder>/vvgo_json right away.
+         If VVGo has already hydrated its settings, retarget them in place
+         (respecting a deliberately custom path); otherwise VVGo's folder-change
+         effect derives the same default when it mounts. */
+      try {
+        const V = window.__CDZ_VVGO_STATE;
+        if (V && V.settings) {
+          const cur = V.settings.vvgo_json_dir;
+          V.settings.vvgo_json_dir =
+            (typeof _retargetJsonDir === "function")
+              ? _retargetJsonDir(j.outputDir, cur)
+              : (j.outputDir.replace(/[\\/]+$/, "") +
+                 (j.outputDir.includes("\\") ? "\\" : "/") + "vvgo_json");
+        }
+      } catch (_e) { /* non-fatal — VVGo will derive it on mount */ }
       const flagN = (j.flagged || []).length;
       addLog("ok",
         `Loaded ${j.packets} crops from ${j.sources} source image(s)` +
