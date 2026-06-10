@@ -270,6 +270,56 @@ function QCReview() {
     }
   }
 
+  /* Keyboard shortcuts: A approve · F flag · R redraw · ←/→ navigate · Esc
+     clears a multi-selection. No dependency array → re-subscribed each render
+     so the handler always closes over fresh `cur`/`visible`/`multiSel`. Typing
+     in a field (e.g. a flag note) is never intercepted. Only QCReview is
+     mounted on the QC tab, so this won't collide with Redraw's key handler. */
+  useEffectS2(() => {
+    function onKey(e) {
+      if (!session) return;
+      const t = e.target || {};
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key;
+      if (k === "ArrowRight" || k === "ArrowLeft") {
+        if (!visible.length) return;
+        e.preventDefault();
+        const i = cur ? visible.findIndex((c) => c.path === cur.path) : -1;
+        const ni = k === "ArrowRight"
+          ? Math.min(visible.length - 1, i < 0 ? 0 : i + 1)
+          : Math.max(0, i < 0 ? 0 : i - 1);
+        const nc = visible[ni];
+        if (nc) {
+          setSelPath(nc.path); QC.selectedPath = nc.path;
+          QC.multi = new Set(); setMultiSel(new Set());
+        }
+      } else if (k === "a" || k === "A") {
+        e.preventDefault();
+        if (multiSel.size > 0) bulkApprove();
+        else if (cur) toggleStatus(cur.path, "approved");
+      } else if (k === "f" || k === "F") {
+        if (!cur && multiSel.size === 0) return;
+        e.preventDefault();
+        setOverrides((prev) => {
+          const next = { ...prev };
+          const targets = multiSel.size > 0 ? [...multiSel] : [cur.path];
+          /* Toggle off only in the single-crop case; bulk always flags. */
+          if (multiSel.size === 0 && next[cur.path] === "flagged") delete next[cur.path];
+          else for (const p of targets) next[p] = "flagged";
+          QC.overrides = next;
+          return next;
+        });
+      } else if (k === "r" || k === "R") {
+        if (cur && session.hasManifest !== false) { e.preventDefault(); openRedrawFor(cur); }
+      } else if (k === "Escape") {
+        if (multiSel.size > 0) { QC.multi = new Set(); setMultiSel(new Set()); }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   /* ── Empty state — no batch in this session ──────────────────────── */
   if (!session) return <QCEmpty />;
 
@@ -435,10 +485,19 @@ function QCReview() {
                     <Icon paths={ICONS.flag} size={14} /> Flag
                   </button>
                   <button className="btn"
+                    disabled={session.hasManifest === false}
+                    title={session.hasManifest === false
+                      ? "This folder has no boundary manifest (segmented by an older version) — Redraw is unavailable"
+                      : "Redraw this packet's boundary"}
                     onClick={() => openRedrawFor(cur)}>
                     <Icon paths={ICONS.crop} size={14} /> Redraw
                   </button>
                 </div>
+                {session.hasManifest === false &&
+                  <div className="hint" style={{ marginTop: -2, color: "var(--gold)" }}>
+                    No boundary manifest in this folder (older segmentation) — Redraw is unavailable.
+                  </div>
+                }
                 <div className="hint" style={{ marginTop: -2 }}>
                   <span className="kbd">A</span> approve · <span className="kbd">F</span> flag · <span className="kbd">R</span> redraw boundary · <span className="kbd">←/→</span> navigate
                 </div>

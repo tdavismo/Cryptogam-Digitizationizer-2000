@@ -392,6 +392,9 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
         packets: j.packets,
         settings: buildSettings(),
         gridRows: rows, gridCols: cols,
+        /* Older folders have no packet_manifest.csv → Redraw can't resolve
+           source-image boundaries, so QC disables it. */
+        hasManifest: j.hasManifest !== false,
       };
       setOut(j.outputDir);
       /* Auto-populate the VVGo JSON output folder from the folder just opened,
@@ -629,12 +632,12 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             }
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "stretch", justifyContent: "flex-end" }}>
-            <button className="btn btn-primary btn-lg" style={{ width: "100%" }}
+          <div style={{ display: "flex", gap: 8, alignItems: "stretch", justifyContent: "flex-end" }}>
+            <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
               onClick={run}>
               <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
             </button>
-            <button className="btn btn-sm" style={{ width: "100%" }}
+            <button className="btn btn-sm" style={{ flexShrink: 0, whiteSpace: "nowrap" }}
               onClick={openProcessed} disabled={running}
               title="Review or submit crops from a folder segmented earlier">
               <Icon d={ICONS.folder} size={13} /> Open processed…
