@@ -103,8 +103,18 @@ function QCReview() {
   const [receiptByPath, setReceiptByPath] = useStateS2({});
   useEffectS2(() => {
     if (!session || !session.outputDir) return;
-    const jd = (window.__CDZ_VVGO_STATE && window.__CDZ_VVGO_STATE.settings
+    /* Use the shared VVGo json folder only when it actually belongs to THIS
+       batch; otherwise let the backend default to <output_dir>/vvgo_json. A
+       persisted path from a previously-open folder would read receipts from the
+       wrong place and undercount what's "received". */
+    const shared = (window.__CDZ_VVGO_STATE && window.__CDZ_VVGO_STATE.settings
                 && window.__CDZ_VVGO_STATE.settings.vvgo_json_dir) || "";
+    const base = session.outputDir.replace(/[\\/]+$/, "");
+    const want = base + (base.includes("\\") ? "\\" : "/") + "vvgo_json";
+    const c = shared.replace(/[\\/]+$/, "");
+    const autoShaped = /[\\/]vvgo_json$/i.test(c);
+    /* Pass a custom (non-vvgo_json-shaped) path through; drop a stale auto path. */
+    const jd = (!c || (autoShaped && c.toLowerCase() !== want.toLowerCase())) ? "" : shared;
     const url = "/api/audit?output_dir=" + encodeURIComponent(session.outputDir) +
                 (jd ? "&json_dir=" + encodeURIComponent(jd) : "");
     fetch(url).then((r) => r.ok ? r.json() : Promise.reject())

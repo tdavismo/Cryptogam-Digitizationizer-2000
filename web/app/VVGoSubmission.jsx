@@ -48,6 +48,25 @@ function _cleanPromptName(v) {
   return t;
 }
 
+/* Pin the JSON output folder to the *current* batch.
+
+   vvgo_json_dir is a persisted global setting, so a value auto-defaulted for
+   one folder ("<FolderA>/vvgo_json") would otherwise linger after you open a
+   different processed folder — making the audit read receipts from the wrong
+   place and report far too few "received". We retarget only the auto-shaped
+   "<folder>/vvgo_json" value (or an empty one); a path the user deliberately
+   pointed somewhere else is left untouched. */
+function _retargetJsonDir(outputDir, cur) {
+  if (!outputDir) return cur || "";
+  const base = outputDir.replace(/[\\/]+$/, "");
+  const sep  = base.includes("\\") ? "\\" : "/";
+  const want = base + sep + "vvgo_json";
+  const c = (cur || "").replace(/[\\/]+$/, "");
+  const autoShaped = /[\\/]vvgo_json$/i.test(c);
+  if (!c || (autoShaped && c.toLowerCase() !== want.toLowerCase())) return want;
+  return cur;
+}
+
 /* ── Per-crop row in the submission table ───────────────────────────────── */
 function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir }) {
   const st = r.status || "queued";
@@ -282,11 +301,10 @@ function VVGoSubmission() {
       .then((r) => r.ok ? r.json() : {})
       .then((cfg) => {
         const merged = { ...DEFAULT_SETTINGS, ...cfg };
-        if (!merged.vvgo_json_dir && session && session.outputDir) {
-          /* Default JSON output = <outputDir>/vvgo_json on first run */
-          const sep = session.outputDir.includes("\\") ? "\\" : "/";
-          merged.vvgo_json_dir = session.outputDir.replace(/[\\/]+$/, "") + sep + "vvgo_json";
-        }
+        /* Default/retarget JSON output to <outputDir>/vvgo_json for the folder
+           we're actually looking at (a persisted value may belong to a prior
+           folder). */
+        merged.vvgo_json_dir = _retargetJsonDir(session && session.outputDir, merged.vvgo_json_dir);
         /* Heal a prompt value persisted before the name-extraction fix: an old
            config may hold a stringified dict ("{'author': ...}"). Pull the
            filename/name out of it, or fall back to the default. */
@@ -298,6 +316,17 @@ function VVGoSubmission() {
       })
       .catch(() => setS(DEFAULT_SETTINGS));
   }, []);
+
+  /* Whenever the active batch changes, pin the JSON output folder to it so the
+     audit reads receipts from *this* folder's vvgo_json (a persisted path from a
+     prior folder would otherwise undercount "received"). */
+  useEffectS4(() => {
+    if (!session || !session.outputDir) return;
+    setS((prev) => {
+      const next = _retargetJsonDir(session.outputDir, prev.vvgo_json_dir);
+      return next === prev.vvgo_json_dir ? prev : { ...prev, vvgo_json_dir: next };
+    });
+  }, [session && session.outputDir]);
 
   /* Load the crop list whenever the active batch changes. */
   useEffectS4(() => {
