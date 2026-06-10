@@ -33,11 +33,21 @@ const STATUS_RING = {
 /* ── Card — replaces the synthetic Placeholder with the real packet image.
    We keep the exact wrapper structure (.thumb / .thumb-ph / .thumb-foot)
    so every skin's CSS overrides keep applying without any changes. */
-function CropThumb({ c, selected, multi, submitted, onClick }) {
+function CropThumb({ c, selected, multi, receipt, onClick }) {
   const ring = STATUS_RING[c.status] || "neutral";
   const cls  = ["thumb", ring,
                 selected ? "sel"   : "",
                 multi    ? "multi" : ""].filter(Boolean).join(" ");
+  /* receipt: "received" | "needs_output" | "errored" | undefined.
+     The badge reflects whether VVGo produced a JSON output, derived from the
+     authoritative audit (json-on-disk), so a reopened folder shows true state. */
+  const badge = receipt === "received"
+    ? { cls: "received", text: "✓ output", title: "JSON output received" }
+    : receipt === "errored"
+    ? { cls: "errored", text: "✗ error", title: "Submission errored — see VVGo" }
+    : receipt === "needs_output"
+    ? { cls: "needs", text: "⧖ sent", title: "Submitted, no JSON yet — resubmit in VVGo" }
+    : null;
   return (
     <button className={cls}
       onClick={(e) => onClick(c, e)}
@@ -49,7 +59,7 @@ function CropThumb({ c, selected, multi, submitted, onClick }) {
           src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path)}
           alt={c.name} />
         <span className="thumb-num">{c.idxLabel}</span>
-        {submitted && <span className="thumb-submitted" title="Submitted to VVGo">☁ sent</span>}
+        {badge && <span className={`thumb-submitted ${badge.cls}`} title={badge.title}>{badge.text}</span>}
       </div>
       <div className="thumb-foot">
         <span className="mono"
@@ -86,19 +96,25 @@ function QCReview() {
   const [filter,    setFilter]    = useStateS2("all");
   const [selPath,   setSelPath]   = useStateS2(QC.selectedPath);
   const [multiSel,  setMultiSel]  = useStateS2(() => new Set(QC.multi || []));
-  /* Mirror of QC.submitted (path → true), as a Set, so the grid badges and the
-     detail "clear" action re-render. Re-synced from the shared bag on every
-     mount — QCReview is conditionally mounted, so tabbing back here after a
-     VVGo submission picks up the newly-submitted crops. */
-  const [submitted, setSubmitted] = useStateS2(() => new Set(Object.keys(QC.submitted || {})));
+  /* Authoritative receipt status per crop, from /api/audit (json-on-disk =
+     received). Keyed by crop path. Reloaded on every mount so reopening a
+     folder — or returning after a VVGo run — shows the true receipt state,
+     not volatile in-memory flags. */
+  const [receiptByPath, setReceiptByPath] = useStateS2({});
   useEffectS2(() => {
-    setSubmitted(new Set(Object.keys(QC.submitted || {})));
-  }, []);
-
-  function clearSubmitted(path) {
-    if (QC.submitted) delete QC.submitted[path];
-    setSubmitted(new Set(Object.keys(QC.submitted || {})));
-  }
+    if (!session || !session.outputDir) return;
+    const jd = (window.__CDZ_VVGO_STATE && window.__CDZ_VVGO_STATE.settings
+                && window.__CDZ_VVGO_STATE.settings.vvgo_json_dir) || "";
+    const url = "/api/audit?output_dir=" + encodeURIComponent(session.outputDir) +
+                (jd ? "&json_dir=" + encodeURIComponent(jd) : "");
+    fetch(url).then((r) => r.ok ? r.json() : Promise.reject())
+      .then((j) => {
+        const m = {};
+        for (const c of j.crops || []) m[c.path] = c.status;
+        setReceiptByPath(m);
+      })
+      .catch(() => {});
+  }, [session && session.outputDir]);
 
   /* Load real crops on mount / when the batch output dir changes. */
   useEffectS2(() => {
@@ -325,7 +341,7 @@ function QCReview() {
                 <CropThumb key={c.path} c={c}
                   selected={cur && cur.path === c.path}
                   multi={multiSel.has(c.path)}
-                  submitted={submitted.has(c.path)}
+                  receipt={receiptByPath[c.path]}
                   onClick={selectCrop} />
               )}
             </div>
@@ -364,16 +380,25 @@ function QCReview() {
                     <span>Source image was flagged: likely two merged packets in this crop.</span>
                   </div>
                 }
-                {submitted.has(cur.path) &&
-                  <div className="callout blue" style={{ alignItems: "center" }}>
+                {receiptByPath[cur.path] === "received" &&
+                  <div className="callout green" style={{ alignItems: "center" }}>
                     <span className="row" style={{ gap: 8, flex: 1 }}>
-                      <span>☁</span> Submitted to VVGo
+                      <span>✓</span> VVGo output received
                     </span>
-                    <button className="btn btn-sm btn-ghost" style={{ flexShrink: 0 }}
-                      onClick={() => clearSubmitted(cur.path)}
-                      title="Allow this crop to be re-submitted">
-                      Clear
-                    </button>
+                  </div>
+                }
+                {receiptByPath[cur.path] === "needs_output" &&
+                  <div className="callout gold" style={{ alignItems: "center" }}>
+                    <span className="row" style={{ gap: 8, flex: 1 }}>
+                      <span>⧖</span> Submitted, no JSON output yet — resubmit on the VVGo tab
+                    </span>
+                  </div>
+                }
+                {receiptByPath[cur.path] === "errored" &&
+                  <div className="callout red" style={{ alignItems: "center" }}>
+                    <span className="row" style={{ gap: 8, flex: 1 }}>
+                      <Icon paths={ICONS.warn} size={14} /> VVGo submission errored — see the VVGo tab
+                    </span>
                   </div>
                 }
 

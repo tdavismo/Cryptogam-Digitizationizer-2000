@@ -246,6 +246,14 @@ async def batch(req: BatchRequest):
         except Exception:
             manifest_path = Path("")
 
+        # Stamp segmented_at into the audit sidecar for every crop produced.
+        try:
+            crop_names = [p.name for r in results for p, _w, _h in r.crop_info]
+            if crop_names:
+                _audit_record_segmented(out_dir, crop_names)
+        except Exception:
+            pass
+
         flagged = [r for r in flag_results(results) if r.flag]
         ok = len(results) - len(flagged)
         done = {
@@ -301,6 +309,83 @@ def _is_crop_file(p: Path) -> bool:
     return bool(re.search(r"_packet_\d+", p.stem))
 
 
+# ---------------------------------------------------------------------------
+# Audit trail — a packet_audit.json sidecar written into each output folder.
+# It is the persistent, portable record of what happened to each crop:
+# when it was segmented, every VVGo submission attempt (timestamp, model,
+# prompt, ok/error), and where the JSON landed. The actual JSON file on disk
+# remains the authoritative "received" signal — the audit is history, not
+# ground truth, so a deleted JSON correctly reads as needing resubmission.
+# Shape:
+#   { "version": 1,
+#     "crops": {
+#       "<crop filename>": {
+#         "segmented_at": "ISO8601" | null,
+#         "attempts": [ {ts, model, prompt, ok, error, json_name} ... ]
+#       }, ...
+#     } }
+# ---------------------------------------------------------------------------
+
+_AUDIT_NAME = "packet_audit.json"
+# Serialise audit writes per-folder so concurrent submit workers don't clobber
+# each other's read-modify-write of the sidecar.
+_AUDIT_LOCKS: dict = {}
+import threading as _threading
+
+
+def _audit_lock(folder: Path) -> "_threading.Lock":
+    key = str(folder)
+    lk = _AUDIT_LOCKS.get(key)
+    if lk is None:
+        lk = _AUDIT_LOCKS[key] = _threading.Lock()
+    return lk
+
+
+def _audit_load(folder: Path) -> dict:
+    p = folder / _AUDIT_NAME
+    if not p.is_file():
+        return {"version": 1, "crops": {}}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "crops" not in data:
+            return {"version": 1, "crops": {}}
+        return data
+    except Exception:
+        return {"version": 1, "crops": {}}
+
+
+def _audit_save(folder: Path, data: dict) -> None:
+    try:
+        (folder / _AUDIT_NAME).write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _audit_record_segmented(folder: Path, crop_names: list) -> None:
+    """Stamp segmented_at for crops that don't have one yet."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with _audit_lock(folder):
+        data = _audit_load(folder)
+        crops = data.setdefault("crops", {})
+        for name in crop_names:
+            entry = crops.setdefault(name, {"segmented_at": None, "attempts": []})
+            if not entry.get("segmented_at"):
+                entry["segmented_at"] = now
+        _audit_save(folder, data)
+
+
+def _audit_record_attempt(folder: Path, crop_name: str, attempt: dict) -> None:
+    """Append one submission attempt to a crop's history."""
+    with _audit_lock(folder):
+        data = _audit_load(folder)
+        crops = data.setdefault("crops", {})
+        entry = crops.setdefault(crop_name, {"segmented_at": None, "attempts": []})
+        entry.setdefault("attempts", []).append(attempt)
+        _audit_save(folder, data)
+
+
 @app.get("/api/crops", summary="List crop images in an output directory", tags=["Gallery"])
 async def list_crops(output_dir: str = Query(..., description="Path to crops folder")):
     """
@@ -322,6 +407,113 @@ async def list_crops(output_dir: str = Query(..., description="Path to crops fol
             for p in crops
         ],
     }
+
+
+def _json_name_for_crop(crop_stem: str) -> str:
+    """The JSON filename a crop's submission produces (leading-_ stripped)."""
+    return (crop_stem.lstrip("_") or crop_stem) + ".json"
+
+
+@app.get("/api/audit",
+         summary="Per-crop submission/receipt audit for an output folder",
+         tags=["VVGo"])
+async def audit(
+    output_dir: str = Query(..., description="PACKETS output folder (holds crops)"),
+    json_dir: str = Query("", description="Folder holding VVGo JSON outputs "
+                          "(defaults to <output_dir>/vvgo_json)"),
+):
+    """
+    Cross-reference every crop in *output_dir* against:
+      • the packet_audit.json sidecar (submission history), and
+      • the actual JSON files on disk in *json_dir* (authoritative 'received').
+
+    Per crop returns:
+      { stem, name, json_name, segmented_at,
+        received (json file exists), submitted (>=1 attempt),
+        last_ok, last_error, last_model, last_prompt,
+        status: "received" | "needs_output" | "errored" | "not_submitted",
+        attempts: [ {ts, model, prompt, ok, error, json_name} ... ] }
+
+    And batch totals:
+      { total, received, needs_output, errored, not_submitted }
+
+    'received' is derived from the JSON file actually being present, so the
+    view self-heals if outputs are deleted or were never produced.
+    """
+    d = Path(output_dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"Directory not found: {d}")
+    jd = Path(json_dir) if json_dir else (d / "vvgo_json")
+
+    def _build():
+        crops = sorted(
+            p for p in d.iterdir()
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS and _is_crop_file(p))
+
+        sidecar = _audit_load(d)
+        scrops = sidecar.get("crops", {})
+
+        # Backfill segmented_at for any crop missing it (older folders that were
+        # never stamped). One write if anything changed.
+        from datetime import datetime, timezone
+        backfilled = False
+        for p in crops:
+            e = scrops.setdefault(p.name, {"segmented_at": None, "attempts": []})
+            if not e.get("segmented_at"):
+                try:
+                    mt = datetime.fromtimestamp(p.stat().st_mtime, timezone.utc)
+                    e["segmented_at"] = mt.isoformat(timespec="seconds")
+                    backfilled = True
+                except Exception:
+                    pass
+        if backfilled:
+            _audit_save(d, sidecar)
+
+        out_crops = []
+        totals = {"total": 0, "received": 0, "needs_output": 0,
+                  "errored": 0, "not_submitted": 0}
+        for p in crops:
+            jname = _json_name_for_crop(p.stem)
+            received = (jd / jname).is_file()
+            entry = scrops.get(p.name, {"segmented_at": None, "attempts": []})
+            attempts = entry.get("attempts", [])
+            last = attempts[-1] if attempts else None
+            submitted = len(attempts) > 0
+
+            if received:
+                status = "received"
+            elif last and not last.get("ok"):
+                status = "errored"
+            elif submitted:
+                status = "needs_output"   # attempted but no JSON on disk
+            else:
+                status = "not_submitted"
+
+            totals["total"] += 1
+            totals[status] = totals.get(status, 0) + 1
+
+            out_crops.append({
+                "stem": p.stem, "name": p.name, "json_name": jname,
+                "path": str(p),
+                "segmented_at": entry.get("segmented_at"),
+                "received": received,
+                "submitted": submitted,
+                "last_ok": bool(last and last.get("ok")),
+                "last_error": (last or {}).get("error"),
+                "last_model": (last or {}).get("model"),
+                "last_prompt": (last or {}).get("prompt"),
+                "status": status,
+                "attempts": attempts,
+            })
+        return out_crops, totals
+
+    try:
+        out_crops, totals = await asyncio.to_thread(_build)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not build audit: {exc}")
+
+    return {"output_dir": str(d), "json_dir": str(jd),
+            "totals": totals, "crops": out_crops}
 
 
 @app.get("/api/session-from-folder",
@@ -914,7 +1106,17 @@ async def vvgo_submit(body: dict):
         if not p.is_file():
             raise HTTPException(404, f"Crop not found: {p}")
 
+    from datetime import datetime, timezone
+
     def _process_one(p: Path) -> dict:
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        crop_folder = p.parent
+        # VoucherVision Editor ignores files whose names start with "_"
+        # (it treats leading-underscore entries as hidden), and our crops
+        # are named "_DSC0002_packet_01". Strip leading underscores from
+        # the JSON filename so the Editor lists the folder correctly.
+        json_stem = p.stem.lstrip("_") or p.stem
+        out_path = json_dir / f"{json_stem}.json"
         try:
             with p.open("rb") as fh:
                 r = requests.post(
@@ -925,19 +1127,19 @@ async def vvgo_submit(body: dict):
                     timeout=180,
                 )
             r.raise_for_status()
-            # VoucherVision Editor ignores files whose names start with "_"
-            # (it treats leading-underscore entries as hidden), and our crops
-            # are named "_DSC0002_packet_01". Strip leading underscores from
-            # the JSON filename so the Editor lists the folder correctly.
-            json_stem = p.stem.lstrip("_") or p.stem
-            out_path = json_dir / f"{json_stem}.json"
             out_path.write_text(
                 json.dumps(r.json(), indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
+            _audit_record_attempt(crop_folder, p.name, {
+                "ts": ts, "model": model, "prompt": prompt,
+                "ok": True, "error": None, "json_name": out_path.name})
             return {"name": p.name, "path": str(p), "ok": True,
                     "json_path": str(out_path)}
         except Exception as exc:
+            _audit_record_attempt(crop_folder, p.name, {
+                "ts": ts, "model": model, "prompt": prompt,
+                "ok": False, "error": str(exc), "json_name": out_path.name})
             return {"name": p.name, "path": str(p), "ok": False,
                     "error": str(exc)}
 

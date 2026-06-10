@@ -88,7 +88,12 @@ const STATUS = {
   queued: { cls: "neutral", text: "Queued" },
   submitted: { cls: "blue", text: "Submitting", pulse: true },
   complete: { cls: "green", text: "Complete" },
-  error: { cls: "red", text: "Error" }
+  error: { cls: "red", text: "Error" },
+  /* VVGo audit statuses (json-on-disk = received is authoritative) */
+  received: { cls: "green", text: "Received" },
+  needs_output: { cls: "gold", text: "Needs output" },
+  errored: { cls: "red", text: "Errored" },
+  not_submitted: { cls: "neutral", text: "Not submitted" }
 };
 function Pill({ status, children }) {
   const s = STATUS[status] || { cls: "neutral", text: status };

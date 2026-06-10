@@ -49,36 +49,111 @@ function _cleanPromptName(v) {
 }
 
 /* ── Per-crop row in the submission table ───────────────────────────────── */
-function SubRow({ r, onView }) {
+function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir }) {
   const st = r.status || "queued";
+  const a  = r.audit;
+  const attempts = (a && a.attempts) || [];
+  /* JSON path on disk = jsonDir + the audit's json_name. Prefer the live
+     run's json_path when present (just written this session). */
+  const sep = (jsonDir || "").includes("\\") ? "\\" : "/";
+  const jsonPath = r.json_path ||
+    (a && a.received && jsonDir ? jsonDir.replace(/[\\/]+$/, "") + sep + a.json_name : null);
+  const lastAttempt = attempts.length ? attempts[attempts.length - 1] : null;
+
   return (
     <div className={`subrow ${st}`}>
       <span className="mono crop-id" title={r.path}>{r.stem || r.name}</span>
       <Pill status={st} />
       <div className="trans-cell">
-        {st === "complete" && r.json_path &&
+        {(st === "received" || st === "complete") &&
           <div className="trans-preview">
-            <span className="ts-sci">{r.sci || "extracted ✓"}</span>
-            <span className="ts-meta" title={r.json_path}>{r.json_path.split(/[\\/]/).pop()}</span>
+            <span className="ts-sci">extracted ✓</span>
+            <span className="ts-meta" title={jsonPath || ""}>
+              {(jsonPath && jsonPath.split(/[\\/]/).pop()) || (a && a.json_name) || "output written"}
+            </span>
           </div>
         }
         {st === "submitted" && <span className="hint mono" style={{ color: "var(--blue)" }}>extracting text…</span>}
-        {st === "queued"    && <span className="hint mono">— waiting —</span>}
-        {st === "error"     && <span className="hint" style={{ color: "var(--red-bright)" }}>{r.error}</span>}
+        {st === "queued"    && <span className="hint mono">— ready to submit —</span>}
+        {(st === "errored" || st === "error") &&
+          <span className="hint" style={{ color: "var(--red-bright)" }}>{r.error || (lastAttempt && lastAttempt.error) || "error"}</span>}
+        {st === "needs_output" &&
+          <span className="hint mono" style={{ color: "var(--gold)" }}>submitted, no JSON yet — resubmit</span>}
+        {st === "not_submitted" && <span className="hint mono">— not submitted —</span>}
       </div>
-      <div className="subrow-act">
-        {st === "complete" && r.json_path &&
+      <div className="subrow-act" style={{ display: "flex", gap: 6 }}>
+        {jsonPath && (st === "received" || st === "complete") &&
           <button className="btn btn-sm btn-ghost"
-             onClick={() => onView(r.json_path)}
-             title="Preview JSON output">
+             onClick={() => onView(jsonPath)} title="Preview JSON output">
             <Icon paths={ICONS.eye} size={13} /> View
           </button>
         }
-        {st === "error" &&
-          <button className="btn btn-sm" onClick={() => r.onRetry && r.onRetry(r)}>
-            <Icon paths={ICONS.retry} size={13} /> Retry
+        {attempts.length > 0 &&
+          <button className="btn btn-sm btn-ghost"
+             onClick={() => onHistory(r)} title={`${attempts.length} submission attempt(s)`}>
+            <Icon paths={ICONS.doc || ICONS.eye} size={13} /> {attempts.length}
           </button>
         }
+        {(st === "needs_output" || st === "errored" || st === "not_submitted") && onSubmitOne &&
+          <button className="btn btn-sm" onClick={() => onSubmitOne(r)} title="Submit this crop now">
+            <Icon paths={ICONS.retry} size={13} /> {st === "not_submitted" ? "Submit" : "Resubmit"}
+          </button>
+        }
+      </div>
+    </div>);
+}
+
+/* ── Submission attempt-history modal — the 'diet VVGo Editor' audit view ─── */
+function AuditModal({ row, jsonDir, onClose, onView }) {
+  const a = row.audit || {};
+  const attempts = a.attempts || [];
+  const sep = (jsonDir || "").includes("\\") ? "\\" : "/";
+  const jsonPath = a.received && jsonDir
+    ? jsonDir.replace(/[\\/]+$/, "") + sep + a.json_name : null;
+  const fmt = (ts) => { try { return new Date(ts).toLocaleString(); } catch (e) { return ts; } };
+
+  return (
+    <div className="json-modal-backdrop" onMouseDown={onClose}>
+      <div className="json-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="json-modal-head">
+          <span className="panel-title">Audit · {row.stem || row.name}</span>
+          <button className="sd-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="json-modal-body">
+          <div className="meta-grid json-fields" style={{ marginBottom: 12 }}>
+            <span className="mk">Segmented</span>
+            <span className="mv" style={{ textAlign: "left" }}>{a.segmented_at ? fmt(a.segmented_at) : "—"}</span>
+            <span className="mk">Status</span>
+            <span className="mv" style={{ textAlign: "left" }}><Pill status={a.status || row.status} /></span>
+            <span className="mk">Output JSON</span>
+            <span className="mv" style={{ textAlign: "left" }}>
+              {a.received
+                ? <button className="btn btn-sm btn-ghost" onClick={() => onView(jsonPath)}>
+                    <Icon paths={ICONS.eye} size={13} /> {a.json_name}
+                  </button>
+                : <span className="hint">none on disk</span>}
+            </span>
+          </div>
+          <div className="sd-section-label" style={{ marginBottom: 6 }}>
+            Submission attempts ({attempts.length})
+          </div>
+          {attempts.length === 0 && <div className="hint">No submissions recorded.</div>}
+          {attempts.map((at, i) =>
+            <div key={i} className={`audit-attempt ${at.ok ? "ok" : "err"}`}>
+              <div className="row between">
+                <span className="mono" style={{ fontSize: 11 }}>{fmt(at.ts)}</span>
+                <span className={at.ok ? "pill green" : "pill red"} style={{ fontSize: 10 }}>
+                  <span className="pdot" />{at.ok ? "ok" : "error"}
+                </span>
+              </div>
+              <div className="hint mono" style={{ marginTop: 3 }}>
+                {at.model} · {at.prompt}
+              </div>
+              {!at.ok && at.error &&
+                <div className="hint" style={{ color: "var(--red-bright)", marginTop: 3 }}>{at.error}</div>}
+            </div>
+          )}
+        </div>
       </div>
     </div>);
 }
@@ -181,6 +256,14 @@ function VVGoSubmission() {
   const [viewJson, setViewJson] = useStateS4(null);    // json_path being previewed
   const abortRef = useRefS4(null);
 
+  /* Audit — the persistent, authoritative record. `auditByPath` maps crop path
+     → audit entry (status received|needs_output|errored|not_submitted, attempts
+     history). `auditTotals` drives the batch-wide progress so filter buttons
+     no longer distort it. Loaded on mount and re-loaded after each submission. */
+  const [auditByPath, setAuditByPath] = useStateS4({});
+  const [auditTotals, setAuditTotals] = useStateS4(null);
+  const [viewAudit,   setViewAudit]   = useStateS4(null);  // crop path → history modal
+
   /* Mirror persisted bits into the global bag whenever they change. */
   useEffectS4(() => { VV.scope    = scope; },    [scope]);
   useEffectS4(() => { VV.advOpen  = advOpen; },  [advOpen]);
@@ -228,20 +311,58 @@ function VVGoSubmission() {
       .catch((e) => setLoadErr(String(e)));
   }, [session && session.outputDir]);
 
-  /* Scope → which crop paths are eligible for submission. "Skip submitted"
-     drops crops already sent to VVGo (QC.submitted) so a re-run doesn't
-     duplicate-process them; the user can clear a crop's submitted tag in QC
-     to re-include it. */
+  /* Pull the authoritative audit (per-crop received/needs_output/errored +
+     attempt history) from the server. JSON presence on disk is the source of
+     truth for 'received', so this is robust across reloads and reopened
+     folders. */
+  function loadAudit() {
+    if (!session || !session.outputDir) return Promise.resolve();
+    const jd = (s && s.vvgo_json_dir) || "";
+    const url = "/api/audit?output_dir=" + encodeURIComponent(session.outputDir) +
+                (jd ? "&json_dir=" + encodeURIComponent(jd) : "");
+    return fetch(url)
+      .then((r) => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then((j) => {
+        const byPath = {};
+        for (const c of j.crops || []) byPath[c.path] = c;
+        setAuditByPath(byPath);
+        setAuditTotals(j.totals || null);
+      })
+      .catch(() => { /* non-fatal — UI falls back to live rows */ });
+  }
+  /* Re-audit when the batch or the JSON output folder changes. */
+  useEffectS4(() => { loadAudit(); },
+    [session && session.outputDir, s && s.vvgo_json_dir]);
+
+  /* Scope → which crop paths are eligible for submission.
+       base:    "approved" (QC-approved only) | "all"
+       needsOnly: drop crops that already have a JSON output (audit 'received')
+                  so a re-run only fills the gaps — the duplicate-avoidance the
+                  user actually wants, driven by the authoritative audit. */
   const cropsScoped = useMemoS4(() => {
-    const sub = qcState.submitted || {};
     let list = scope === "all"
       ? crops
       : crops.filter((c) => (qcState.overrides || {})[c.path] === "approved");
-    if (skipSubmitted) list = list.filter((c) => !sub[c.path]);
+    if (skipSubmitted) {
+      list = list.filter((c) => {
+        const a = auditByPath[c.path];
+        return !(a && a.received);     // keep only crops still missing output
+      });
+    }
     return list;
-  }, [crops, scope, skipSubmitted]);
+  }, [crops, scope, skipSubmitted, auditByPath]);
 
-  /* Counters derived from the live rows map. */
+  /* How many of the currently-scoped crops still need an output, for the
+     Needs-output chip count. */
+  const needsOutputCount = useMemoS4(() => {
+    const base = scope === "all"
+      ? crops
+      : crops.filter((c) => (qcState.overrides || {})[c.path] === "approved");
+    return base.filter((c) => { const a = auditByPath[c.path]; return !(a && a.received); }).length;
+  }, [crops, scope, auditByPath]);
+
+  /* Live in-run counters from the rows map (used only while a submission is
+     streaming, for the moment-to-moment view). */
   const counts = useMemoS4(() => {
     const c = { complete: 0, submitted: 0, error: 0, queued: 0 };
     for (const k in rows) c[rows[k].status] = (c[rows[k].status] || 0) + 1;
@@ -287,8 +408,10 @@ function VVGoSubmission() {
     }
   }
 
-  /* ── Submission ──────────────────────────────────────────────────────── */
-  async function startSubmission() {
+  /* ── Submission ──────────────────────────────────────────────────────────
+     `targets` defaults to the scoped list; a single-crop resubmit passes [crop].
+     Same streaming pipeline either way. */
+  async function startSubmission(targets) {
     if (running) {                      // acts as Cancel while a run streams
       if (abortRef.current) abortRef.current.abort();
       return;
@@ -297,7 +420,8 @@ function VVGoSubmission() {
       alert("Enter your API token first (click Save to persist it).");
       return;
     }
-    if (cropsScoped.length === 0) {
+    const list = targets && targets.length ? targets : cropsScoped;
+    if (list.length === 0) {
       alert(scope === "approved"
         ? "No approved crops to submit. Approve some in QC Review, or switch scope to \"All crops\"."
         : "No crops to submit.");
@@ -308,10 +432,13 @@ function VVGoSubmission() {
       return;
     }
 
-    /* Seed every selected crop as "queued" so the table populates immediately. */
-    const seed = {};
-    for (const c of cropsScoped) seed[c.path] = { path: c.path, name: c.name, stem: c.stem, status: "queued" };
-    setRows(seed);
+    /* Seed each selected crop as "queued" so the table populates immediately.
+       Merge into existing rows so a single resubmit doesn't wipe the table. */
+    setRows((prev) => {
+      const next = { ...prev };
+      for (const c of list) next[c.path] = { path: c.path, name: c.name, stem: c.stem, status: "queued" };
+      return next;
+    });
 
     setRunning(true);
     const ctrl = new AbortController();
@@ -323,7 +450,7 @@ function VVGoSubmission() {
         model: s.vvgo_model,
         prompt: s.vvgo_prompt,
         json_dir: s.vvgo_json_dir,
-        crop_paths: cropsScoped.map((c) => c.path),
+        crop_paths: list.map((c) => c.path),
         max_workers: s.vvgo_workers,
         ocr_engine: s.vvgo_ocr,
         include_wfo: s.vvgo_wfo,
@@ -382,22 +509,43 @@ function VVGoSubmission() {
     } finally {
       setRunning(false);
       abortRef.current = null;
+      /* Re-pull the authoritative audit so receipts/badges reflect the JSON
+         files just written (and any errors recorded). */
+      loadAudit();
     }
   }
 
   /* ── Empty state ─────────────────────────────────────────────────────── */
   if (!session) return <VVGoEmpty />;
 
-  /* Visible rows: union of the seeded/queued set and any inflight updates */
-  const visibleRows = cropsScoped.map((c) => rows[c.path] ||
-    { path: c.path, name: c.name, stem: c.stem, status: "queued" });
+  /* Visible rows: each scoped crop, merged with (1) any live in-run status and
+     (2) the persistent audit status. Live status wins while a submission is
+     streaming; otherwise the audit (json-on-disk) is the source of truth. */
+  const visibleRows = cropsScoped.map((c) => {
+    const live = rows[c.path];
+    const a = auditByPath[c.path];
+    if (live && (live.status === "complete" || live.status === "error" || running)) {
+      return { ...c, ...live, audit: a };
+    }
+    return {
+      path: c.path, name: c.name, stem: c.stem,
+      status: a ? a.status : "queued",
+      json_path: a && a.received ? null : null,   // View uses audit json_name
+      error: a ? a.last_error : null,
+      audit: a,
+    };
+  });
 
   const approvedCount = Object.values(qcState.overrides || {}).filter((v) => v === "approved").length;
-  const submittedCount = Object.keys(qcState.submitted || {}).length;
   const eligibleTotal = cropsScoped.length;
-  const pctComplete   = eligibleTotal ? (counts.complete   / eligibleTotal) * 100 : 0;
-  const pctSubmitting = eligibleTotal ? (counts.submitted  / eligibleTotal) * 100 : 0;
-  const pctError      = eligibleTotal ? (counts.error      / eligibleTotal) * 100 : 0;
+
+  /* Batch-wide progress reads from the audit totals (whole folder), NOT the
+     filtered rows — so toggling scope/needs-output no longer warps the bar. */
+  const bt = auditTotals || { total: crops.length, received: 0, needs_output: 0, errored: 0, not_submitted: crops.length };
+  const batchTotal   = bt.total || crops.length || 0;
+  const pctReceived  = batchTotal ? (bt.received / batchTotal) * 100 : 0;
+  const pctErrored   = batchTotal ? (bt.errored  / batchTotal) * 100 : 0;
+  const pctNeeds     = batchTotal ? ((bt.needs_output || 0) / batchTotal) * 100 : 0;
 
   return (
     <div className="submit">
@@ -464,9 +612,9 @@ function VVGoSubmission() {
               All<span className="fn">{crops.length}</span>
             </button>
             <button className={`fchip ${skipSubmitted ? "on" : ""}`}
-              title="Exclude crops already submitted to VVGo"
+              title="Only submit crops that don't yet have a JSON output (skip already-received)"
               onClick={() => { const v = !skipSubmitted; VV.skipSubmitted = v; setSkipSubmitted(v); }}>
-              Skip sent<span className="fn">{submittedCount}</span>
+              Needs output<span className="fn">{needsOutputCount}</span>
             </button>
           </div>
         </div>
@@ -549,32 +697,33 @@ function VVGoSubmission() {
         </div>
       }
 
-      {/* Progress card */}
+      {/* Progress card — reads the batch-wide audit totals, so the readout
+          reflects the whole folder's receipt state and never shifts when the
+          user toggles a scope/needs-output filter. While a submission streams,
+          the headline shows live progress; the pills/bar stay batch-wide. */}
       <div className="progress-card panel">
         <div className="panel-body">
           <div className="row between" style={{ marginBottom: 10 }}>
             <span className="mono" style={{ fontSize: 12.5, color: "var(--text-2)" }}>
               {running
-                ? `Submitting — ${counts.complete + counts.error} / ${eligibleTotal}`
-                : eligibleTotal === 0
-                  ? "Nothing to submit"
-                  : `${counts.complete} / ${eligibleTotal} complete`}
+                ? `Submitting — ${counts.complete + counts.error} / ${eligibleTotal} this run`
+                : `${bt.received} / ${batchTotal} received`}
             </span>
             <div className="row" style={{ gap: 14, flexWrap: "wrap" }}>
-              <span className="pill green"><span className="pdot" />{counts.complete  || 0} complete</span>
-              <span className={`pill blue${running ? " pulse" : ""}`}><span className="pdot" />{counts.submitted || 0} submitting</span>
-              <span className="pill red"><span className="pdot" />{counts.error      || 0} error</span>
-              <span className="pill neutral"><span className="pdot" />{Math.max(0, eligibleTotal - counts.complete - counts.error - counts.submitted)} queued</span>
+              <span className="pill green"><span className="pdot" />{bt.received || 0} received</span>
+              <span className="pill gold"><span className="pdot" />{bt.needs_output || 0} needs output</span>
+              <span className="pill red"><span className="pdot" />{bt.errored || 0} errored</span>
+              <span className="pill neutral"><span className="pdot" />{bt.not_submitted || 0} not submitted</span>
             </div>
           </div>
-          <div className="progress-track">
-            <div className="progress-seg green" style={{ width: pctComplete + "%" }} />
-            <div className="progress-seg blue"  style={{ width: pctSubmitting + "%" }} />
-            <div className="progress-seg red"   style={{ width: pctError + "%" }} />
+          <div className="progress-track" title={`${bt.received}/${batchTotal} crops have a JSON output`}>
+            <div className="progress-seg green" style={{ width: pctReceived + "%" }} />
+            <div className="progress-seg gold"  style={{ width: pctNeeds + "%" }} />
+            <div className="progress-seg red"   style={{ width: pctErrored + "%" }} />
           </div>
           <div className="row between" style={{ marginTop: 8 }}>
             <span className="hint">JSON results: <span className="mono">{s.vvgo_json_dir || "(set a folder above)"}</span></span>
-            <span className="hint">{loadErr ? <span style={{ color: "var(--red-bright)" }}>⚠ {loadErr}</span> : <span className="mono">{crops.length} crops in batch</span>}</span>
+            <span className="hint">{loadErr ? <span style={{ color: "var(--red-bright)" }}>⚠ {loadErr}</span> : <span className="mono">{crops.length} crops · {bt.received} with output</span>}</span>
           </div>
         </div>
       </div>
@@ -595,12 +744,20 @@ function VVGoSubmission() {
                   : "No crops in the current batch."}
               </div>
             }
-            {visibleRows.map((r) => <SubRow key={r.path} r={r} onView={setViewJson} />)}
+            {visibleRows.map((r) => <SubRow key={r.path} r={r}
+              jsonDir={s.vvgo_json_dir}
+              onView={setViewJson}
+              onHistory={(row) => setViewAudit(row)}
+              onSubmitOne={(row) => startSubmission([{ path: row.path, name: row.name, stem: row.stem }])}
+            />)}
           </div>
         </div>
       </div>
 
       {viewJson && <JsonModal path={viewJson} onClose={() => setViewJson(null)} />}
+      {viewAudit && <AuditModal row={viewAudit} jsonDir={s.vvgo_json_dir}
+        onClose={() => setViewAudit(null)}
+        onView={(p) => { setViewAudit(null); setViewJson(p); }} />}
     </div>);
 }
 
