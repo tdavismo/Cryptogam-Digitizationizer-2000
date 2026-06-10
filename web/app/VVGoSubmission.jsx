@@ -501,6 +501,10 @@ function VVGoSubmission() {
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
+      /* The batch-wide progress bar reads auditTotals (json-on-disk truth).
+         Re-pull it during the run — throttled — so the bar advances as outputs
+         land, instead of only on completion or a tab switch. */
+      let lastAuditTick = 0;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -530,6 +534,10 @@ function VVGoSubmission() {
                 error: evt.error || null,
               },
             }));
+            /* Advance the batch-wide progress live (throttled ≥900 ms so a fast
+               run doesn't hammer the audit endpoint). */
+            const now = performance.now();
+            if (now - lastAuditTick > 900) { lastAuditTick = now; loadAudit(); }
           }
         }
       }

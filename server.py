@@ -902,6 +902,115 @@ async def redraw(req: RedrawRequest):
     return {"ok": True, "output_path": str(out), **info}
 
 
+class AddPacketRequest(BaseModel):
+    output_dir: str
+    source_path: str
+    x: int
+    y: int
+    w: int
+    h: int
+    padding: int = 0
+
+
+@app.post("/api/add-packet",
+          summary="Create a NEW packet crop from a hand-drawn box on a source image",
+          tags=["Redraw"])
+async def add_packet(req: AddPacketRequest):
+    """
+    Crop *source_path* at a user-drawn box and write it as a brand-new packet
+    crop in *output_dir* — for when a source image holds two packets but only
+    one was detected by the batch. Mirrors the batch's file naming
+    (<source_stem>_packet_NN.<ext>, next free index) and appends a row to
+    packet_manifest.csv so the new crop participates in Redraw / QC / audit
+    exactly like a detected one.
+
+    Returns the crop path plus a manifest entry in the same shape /api/manifest
+    yields, so the frontend can splice it into its in-memory manifest.
+    """
+    src = Path(req.source_path)
+    out_dir = Path(req.output_dir)
+    if not src.is_file():
+        raise HTTPException(404, f"Source not found: {src}")
+    if not out_dir.is_dir():
+        raise HTTPException(404, f"Output directory not found: {out_dir}")
+
+    def _do() -> dict:
+        img = _imread_oriented(src)
+        ih, iw = img.shape[:2]
+        if not (0 <= req.x < iw and 0 <= req.y < ih and req.w > 0 and req.h > 0):
+            raise ValueError(
+                f"Box {req.x},{req.y} {req.w}x{req.h} is outside the source "
+                f"({iw}x{ih}).")
+
+        # Next free packet index for THIS source: highest existing
+        # <stem>_packet_NN in the folder, plus one (so we never collide with a
+        # detected crop or a previously hand-added one).
+        stem = src.stem
+        suffix = src.suffix.lower()
+        max_idx = 0
+        pat = re.compile(re.escape(stem) + r"_packet_(\d+)")
+        for p in out_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = pat.match(p.stem)
+            if m:
+                try:
+                    max_idx = max(max_idx, int(m.group(1)))
+                except ValueError:
+                    pass
+        idx = max_idx + 1
+        out = out_dir / f"{stem}_packet_{idx:02d}{suffix}"
+
+        crop, (cx1, cy1, cx2, cy2) = _padded_crop(
+            img, req.x, req.y, req.w, req.h, max(0, int(req.padding)))
+        if crop is None or crop.size == 0:
+            raise ValueError("Crop produced an empty image.")
+        if not cv2.imwrite(str(out), crop):
+            raise IOError(f"Could not write: {out}")
+
+        # Append a manifest row mirroring save_crops_detailed (manual packet:
+        # no detector stats; top_crop_px=0 since coords are already full-image).
+        row = {k: "" for k in MANIFEST_FIELDS}
+        row.update({
+            "source_image": str(src), "output_crop": str(out),
+            "packet_index": idx, "detected_foreground": "manual",
+            "top_crop_px": 0,
+            "bbox_x": req.x, "bbox_y": req.y, "bbox_w": req.w, "bbox_h": req.h,
+            "crop_x1": cx1, "crop_y1": cy1, "crop_x2": cx2, "crop_y2": cy2,
+            "deskewed": False,
+        })
+        mf = out_dir / "packet_manifest.csv"
+        existed = mf.is_file()
+        with mf.open("a", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=MANIFEST_FIELDS)
+            if not existed:
+                writer.writeheader()
+            writer.writerow(row)
+
+        try:
+            _audit_record_segmented(out_dir, [out.name])
+        except Exception:
+            pass
+
+        return {
+            "output_path": str(out), "name": out.name,
+            "entry": {
+                "source_path": str(src), "source_w": int(iw), "source_h": int(ih),
+                "x": int(req.x), "y": int(req.y), "w": int(req.w), "h": int(req.h),
+                "padding": max(0, int(req.padding)), "deskewed": False,
+                "packet_index": idx,
+            },
+        }
+
+    try:
+        info = await asyncio.to_thread(_do)
+    except (ValueError, IOError) as exc:
+        raise HTTPException(422, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"Add packet failed: {exc}")
+    return {"ok": True, **info}
+
+
 # ---------------------------------------------------------------------------
 # VoucherVision Go — constants, persisted config, prompts, submit SSE
 # ---------------------------------------------------------------------------

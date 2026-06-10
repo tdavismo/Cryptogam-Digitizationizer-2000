@@ -182,6 +182,13 @@ function RedrawBoundary() {
   const [saving,    setSaving]    = useStateS3(false);
   const dragRef = useRefS3(null);
 
+  /* "Add packet" mode: draw a brand-new boundary on the source image for a
+     packet the batch never detected (e.g. the second of two in one image).
+     newBox is the hand-drawn box (source px); accepting it POSTs /api/add-packet
+     to create a new crop + manifest row. */
+  const [addMode, setAddMode] = useStateS3(false);
+  const [newBox,  setNewBox]  = useStateS3(null);
+
   /* Pan/zoom of the editor viewport. `pan` shifts the visible region in
      source pixels; `zoom` multiplies the auto-zoom (1 = fit-to-box). Both
      reset whenever the current crop changes (handled in goto + an effect). */
@@ -189,37 +196,127 @@ function RedrawBoundary() {
   const [zoom, setZoom] = useStateS3(1);
   const panRef = useRefS3(null);
 
-  /* The "effective" box (draft if set, else the manifest's) drives every
-     position / readout. */
-  const effective = draftBox || (cur
-    ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h }
-    : null);
+  /* The "effective" box drives every position / readout. In add mode it's the
+     hand-drawn newBox; otherwise the in-progress draft or the manifest's box.
+     setActiveBox routes drag edits to the right state. */
+  const effective = addMode
+    ? newBox
+    : (draftBox || (cur ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h } : null));
+  const setActiveBox = addMode ? setNewBox : setDraftBox;
 
   /* Auto-zoom base region around the manifest box, then apply user pan/zoom.
      Zoom shrinks the region about its centre; pan translates it; both are
      clamped to the source bounds so you can't scroll off the image. */
   const view = useMemoS3(() => {
     if (!cur || !container.cw) return null;
-    const base = _viewRegion(cur, cur, container);
+    /* Add mode widens the framing so the un-segmented neighbour packet is
+       visible to draw around; normal mode frames tightly on the current box. */
+    const base = _viewRegion(cur, cur, container, addMode ? 1.4 : 0.35);
     if (!base) return null;
     const sw = cur.source_w, sh = cur.source_h;
     let vw = base.vw / zoom, vh = base.vh / zoom;
     vw = Math.min(vw, sw); vh = Math.min(vh, sh);
+    /* Guarantee pan headroom at base zoom. _viewRegion can inflate the view to
+       fill the whole source in one axis (e.g. a tall box in a wide canvas),
+       which pins the pan clamp to zero and makes panning silently do nothing on
+       some packets. Shrink the region (preserving aspect) so it never exceeds
+       ~90% of the source in either axis — there's always room to drag. At
+       zoom > 1 the region is already smaller, so this never bites. */
+    const fit = Math.min(1, (sw * 0.9) / vw, (sh * 0.9) / vh);
+    vw *= fit; vh *= fit;
     const cx = base.vx + base.vw / 2 + pan.dx;
     const cy = base.vy + base.vh / 2 + pan.dy;
     let vx = cx - vw / 2, vy = cy - vh / 2;
     vx = Math.max(0, Math.min(sw - vw, vx));
     vy = Math.max(0, Math.min(sh - vh, vy));
     return { vx, vy, vw, vh, scale: container.cw / vw };
-  }, [cur, container.cw, container.ch, pan, zoom]);
+  }, [cur, container.cw, container.ch, pan, zoom, addMode]);
 
-  /* Reset pan/zoom when the crop changes. */
-  useEffectS3(() => { setPan({ dx: 0, dy: 0 }); setZoom(1); }, [curPath]);
+  /* Reset pan/zoom when the crop changes or add mode toggles (so the framing
+     recomputes cleanly for the new view). */
+  useEffectS3(() => { setPan({ dx: 0, dy: 0 }); setZoom(1); }, [curPath, addMode]);
 
-  /* Navigation clears any in-progress draft. */
+  /* Navigation clears any in-progress draft / new box. */
   function goto(n) {
     setDraftBox(null);
+    setNewBox(null);
     setIdx(Math.max(0, Math.min(cropPaths.length - 1, n)));
+  }
+
+  /* ── Add-packet: rubber-band a fresh box on the source image ─────────── */
+  function startNewBox(e) {
+    if (!view || saving) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sw = cur.source_w, sh = cur.source_h;
+    const toSrc = (cx, cy) => ({
+      x: Math.max(0, Math.min(sw, view.vx + (cx - rect.left) / view.scale)),
+      y: Math.max(0, Math.min(sh, view.vy + (cy - rect.top) / view.scale)),
+    });
+    const start = toSrc(e.clientX, e.clientY);
+    const onMove = (ev) => {
+      const p = toSrc(ev.clientX, ev.clientY);
+      setNewBox({
+        x: Math.round(Math.min(start.x, p.x)), y: Math.round(Math.min(start.y, p.y)),
+        w: Math.round(Math.abs(p.x - start.x)), h: Math.round(Math.abs(p.y - start.y)),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function toggleAddMode() {
+    setNewBox(null);
+    setDraftBox(null);
+    setAddMode((v) => !v);
+  }
+
+  /* ── Add packet — POST /api/add-packet, splice into manifest, jump to it ─ */
+  async function addPacket() {
+    if (!newBox || !cur || saving) return;
+    if (newBox.w < 10 || newBox.h < 10) {
+      setFlash("failed:draw a box first (drag on the image)");
+      setTimeout(() => setFlash(null), 3000);
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await fetch("/api/add-packet", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          output_dir: session.outputDir,
+          source_path: cur.source_path,
+          x: newBox.x, y: newBox.y, w: newBox.w, h: newBox.h,
+          padding: cur.padding != null ? cur.padding : 30,
+        }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.detail || r.statusText);
+      }
+      const j = await r.json();
+      /* Splice the new crop into the manifest and jump to it (the RS.path
+         effect resolves it to an index once cropPaths updates). */
+      setManifest((prev) => ({
+        ...prev,
+        crops: { ...prev.crops, [j.output_path]: j.entry },
+      }));
+      RS.path = j.output_path;
+      setNewBox(null);
+      setAddMode(false);
+      setFlash("added");
+      setTimeout(() => setFlash(null), 1800);
+    } catch (e) {
+      setFlash("failed:" + e.message);
+      setTimeout(() => setFlash(null), 3200);
+    } finally {
+      setSaving(false);
+    }
   }
 
   /* ── Pan: drag on empty canvas (not on the bbox) moves the viewport. ── */
@@ -297,8 +394,8 @@ function RedrawBoundary() {
         w = Math.max(MIN, w);
         h = Math.max(MIN, h);
       }
-      setDraftBox({ x: Math.round(x), y: Math.round(y),
-                    w: Math.round(w), h: Math.round(h) });
+      setActiveBox({ x: Math.round(x), y: Math.round(y),
+                     w: Math.round(w), h: Math.round(h) });
     };
     const onUp = () => {
       dragRef.current = null;
@@ -359,8 +456,9 @@ function RedrawBoundary() {
   useEffectS3(() => {
     const onKey = (e) => {
       if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
-      if (e.key === "Enter")       { if (draftBox) accept(); }
-      else if (e.key === "r" || e.key === "R") setDraftBox(null);
+      if (e.key === "Enter")       { if (addMode) addPacket(); else if (draftBox) accept(); }
+      else if (e.key === "Escape") { if (addMode) toggleAddMode(); }
+      else if (e.key === "r" || e.key === "R") { if (addMode) setNewBox(null); else setDraftBox(null); }
       else if (e.key === "ArrowLeft")  goto(idx - 1);
       else if (e.key === "ArrowRight") goto(idx + 1);
     };
@@ -410,30 +508,33 @@ function RedrawBoundary() {
         {/* Editor canvas */}
         <div className="editor-wrap grow" style={{ minWidth: 0 }}>
           <div ref={canvasRef} className="editor-canvas"
-               onMouseDown={(e) => { if (e.target === e.currentTarget || e.target.tagName === "IMG") startPan(e); }}
+               onMouseDown={(e) => { if (e.target === e.currentTarget || e.target.tagName === "IMG") (addMode ? startNewBox(e) : startPan(e)); }}
                onWheel={onWheel}
                style={{ position: "relative", width: "100%", height: "100%",
                         overflow: "hidden",
-                        cursor: panRef.current ? "grabbing" : "grab" }}>
+                        cursor: addMode ? "crosshair" : (panRef.current ? "grabbing" : "grab") }}>
             {view && <>
               <img src={"/api/file?path=" + encodeURIComponent(cur.source_path)}
                    alt="" style={imgStyle} draggable={false} />
-              <div className="bbox" style={boxStyle}
+              {effective &&
+              <div className={"bbox" + (addMode ? " bbox-new" : "")} style={boxStyle}
                    onMouseDown={(e) => startDrag(e, "move")}>
                 {["nw","n","ne","e","se","s","sw","w"].map(
                   (h) => <Handle key={h} pos={h} onDrag={startDrag} />)}
                 <span className="bbox-dim">
-                  {effective.w} × {effective.h} px{draftBox ? "  ·  unsaved" : ""}
+                  {effective.w} × {effective.h} px{addMode ? "  ·  new packet" : draftBox ? "  ·  unsaved" : ""}
                 </span>
-              </div>
+              </div>}
             </>}
             <span className="ph-label" style={{ position: "absolute", bottom: 12, left: 14,
                                                  textAlign: "left",
-                                                 color: "var(--text-3)",
+                                                 color: addMode ? "var(--green)" : "var(--text-3)",
                                                  fontFamily: "var(--mono)",
                                                  fontSize: 10,
                                                  pointerEvents: "none" }}>
-              packet {String(cur ? cur.packet_index : 0).padStart(2, "0")} · drag to pan · scroll to zoom{zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}
+              {addMode
+                ? "add packet · drag on the image to draw the new boundary · Esc to cancel"
+                : `packet ${String(cur ? cur.packet_index : 0).padStart(2, "0")} · drag to pan · scroll to zoom${zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}`}
             </span>
           </div>
         </div>
@@ -490,31 +591,47 @@ function RedrawBoundary() {
           </div>
 
           <div className="redraw-actions">
-            <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
-              disabled={!draftBox || saving}
-              onClick={accept}>
-              <Icon d={ICONS.check} size={15} /> {saving ? "Saving…" : "Accept Boundary"}
-            </button>
-            <button className="btn btn-lg" title="Reset to detected box"
-              disabled={!draftBox || saving}
-              onClick={() => setDraftBox(null)}>
-              <Icon paths={ICONS.reset} size={15} />
+            {addMode
+              ? <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+                  disabled={!newBox || newBox.w < 10 || newBox.h < 10 || saving}
+                  onClick={addPacket}>
+                  <Icon d={ICONS.check} size={15} /> {saving ? "Adding…" : "Create Packet"}
+                </button>
+              : <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+                  disabled={!draftBox || saving}
+                  onClick={accept}>
+                  <Icon d={ICONS.check} size={15} /> {saving ? "Saving…" : "Accept Boundary"}
+                </button>
+            }
+            <button className="btn btn-lg" title={addMode ? "Cancel add-packet" : "Reset to detected box"}
+              disabled={addMode ? saving : (!draftBox || saving)}
+              onClick={() => (addMode ? toggleAddMode() : setDraftBox(null))}>
+              <Icon paths={addMode ? ICONS.x : ICONS.reset} size={15} />
             </button>
           </div>
+          <button className={"btn btn-sm" + (addMode ? " adv-open" : "")}
+            style={{ width: "100%", marginTop: 8 }}
+            disabled={saving}
+            title="Draw a boundary for a packet the batch missed (e.g. the second of two in one image)"
+            onClick={toggleAddMode}>
+            <Icon d={ICONS.crop} size={14} /> {addMode ? "Exit add-packet mode" : "Add packet…"}
+          </button>
           {flash &&
             <div className="hint" style={{
               textAlign: "center",
-              color: flash === "saved" ? "var(--green)" : "var(--red-bright)",
+              color: (flash === "saved" || flash === "added") ? "var(--green)" : "var(--red-bright)",
               fontWeight: 600,
             }}>
-              {flash === "saved" ? "✓  Crop saved" : "✗  " + flash.replace(/^failed:/, "")}
+              {flash === "saved" ? "✓  Crop saved"
+                : flash === "added" ? "✓  New packet created"
+                : "✗  " + flash.replace(/^failed:/, "")}
             </div>
           }
           {!flash &&
             <div className="hint" style={{ textAlign: "center" }}>
-              <span className="kbd">Enter</span> accept ·{" "}
-              <span className="kbd">R</span> reset ·{" "}
-              <span className="kbd">←/→</span> prev / next
+              {addMode
+                ? <><span className="kbd">Enter</span> create · <span className="kbd">R</span> clear box · <span className="kbd">Esc</span> exit</>
+                : <><span className="kbd">Enter</span> accept · <span className="kbd">R</span> reset · <span className="kbd">←/→</span> prev / next</>}
             </div>
           }
 

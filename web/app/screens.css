@@ -347,6 +347,10 @@
   border: 1px solid var(--red-line); }
 .bbox-handle { position: absolute; width: 11px; height: 11px; background: var(--red);
   border: 2px solid #fff; border-radius: 2px; }
+/* Add-packet: a fresh boundary, drawn green to distinguish it from a redraw. */
+.bbox-new { border-color: var(--green); }
+.bbox-new .bbox-dim { color: var(--green); border-color: var(--green-line, var(--green)); }
+.bbox-new .bbox-handle { background: var(--green); }
 .bbox-handle.nw { top: -6px; left: -6px; cursor: nwse-resize; }
 .bbox-handle.ne { top: -6px; right: -6px; cursor: nesw-resize; }
 .bbox-handle.sw { bottom: -6px; left: -6px; cursor: nesw-resize; }

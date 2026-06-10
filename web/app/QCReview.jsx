@@ -473,16 +473,29 @@ function QCReview() {
                 </div>
 
                 <div className="detail-actions">
-                  <button className={`btn btn-primary${cur.status === "approved" ? " active" : ""}`}
+                  <button className={`btn btn-primary${cur.status === "approved" && multiSel.size === 0 ? " active" : ""}`}
                     style={{ flex: 1 }}
-                    title={cur.status === "approved" ? "Press again to un-approve" : "Approve"}
-                    onClick={() => toggleStatus(cur.path, "approved")}>
-                    <Icon d={ICONS.check} size={14} /> {cur.status === "approved" ? "Approved ✓" : "Approve"}
+                    title={multiSel.size > 0 ? `Approve all ${multiSel.size} selected crops`
+                      : cur.status === "approved" ? "Press again to un-approve" : "Approve"}
+                    onClick={() => { if (multiSel.size > 0) bulkApprove(); else toggleStatus(cur.path, "approved"); }}>
+                    <Icon d={ICONS.check} size={14} />{" "}
+                    {multiSel.size > 0 ? `Approve ${multiSel.size} selected`
+                      : cur.status === "approved" ? "Approved ✓" : "Approve"}
                   </button>
-                  <button className={`btn${cur.status === "flagged" ? " active" : ""}`}
-                    title={cur.status === "flagged" ? "Press again to un-flag" : "Flag"}
-                    onClick={() => toggleStatus(cur.path, "flagged")}>
-                    <Icon paths={ICONS.flag} size={14} /> Flag
+                  <button className={`btn${cur.status === "flagged" && multiSel.size === 0 ? " active" : ""}`}
+                    title={multiSel.size > 0 ? `Flag all ${multiSel.size} selected crops`
+                      : cur.status === "flagged" ? "Press again to un-flag" : "Flag"}
+                    onClick={() => {
+                      setOverrides((prev) => {
+                        const next = { ...prev };
+                        if (multiSel.size > 0) { for (const p of multiSel) next[p] = "flagged"; }
+                        else if (next[cur.path] === "flagged") delete next[cur.path];
+                        else next[cur.path] = "flagged";
+                        QC.overrides = next;
+                        return next;
+                      });
+                    }}>
+                    <Icon paths={ICONS.flag} size={14} /> {multiSel.size > 0 ? `Flag ${multiSel.size} selected` : "Flag"}
                   </button>
                   <button className="btn"
                     disabled={session.hasManifest === false}
