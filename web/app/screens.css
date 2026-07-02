@@ -340,8 +340,20 @@
 .redraw-main { display: flex; gap: 16px; height: 100%; }
 .editor-wrap { min-width: 0; }
 .editor-canvas { background-color: #0a0d0b; }
+/* Active boundary: dashed so "what's being redrawn" reads instantly against
+   the solid-thin ghost outlines of the other packets. No dimming mask — the
+   whole source image stays visible for context. */
 .bbox { position: absolute; top: 20%; left: 15%; width: 44%; height: 60%;
-  border: 2px solid var(--red); box-shadow: 0 0 0 9999px rgba(8,10,9,0.55); border-radius: 2px; }
+  border: 2.5px dashed var(--red); border-radius: 2px; }
+.bbox-ghost { border: 1.5px solid rgba(150,150,150,0.55); border-radius: 2px;
+  pointer-events: none; }
+.bbox-ghost.ghost-green { border-color: rgba(91,192,103,0.55); }
+.bbox-ghost.ghost-red   { border-color: rgba(218,27,69,0.5); }
+.bbox-ghost-num { position: absolute; top: 2px; left: 5px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: rgba(170,170,170,0.85); }
+.bbox-ghost.ghost-green .bbox-ghost-num { color: rgba(91,192,103,0.85); }
+.bbox-ghost.ghost-red   .bbox-ghost-num { color: rgba(218,27,69,0.8); }
 .bbox-dim { position: absolute; top: -24px; left: 0; font-family: var(--mono); font-size: 11px;
   color: var(--red-bright); background: var(--bg); padding: 1px 6px; border-radius: 3px;
   border: 1px solid var(--red-line); }

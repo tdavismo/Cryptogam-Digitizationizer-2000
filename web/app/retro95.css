@@ -538,9 +538,12 @@
   border: 2.5px solid #2C1810;
 }
 .aesthetic-retro95 .bbox {
-  border: 3px solid #E76F51;
-  box-shadow: 0 0 0 9999px rgba(237,217,184,0.55), 3px 4px 0 #2C1810;
+  border: 3px dashed #E76F51;
+  box-shadow: none;
 }
+.aesthetic-retro95 .bbox.bbox-new { border-color: #2A9D8F; }
+.aesthetic-retro95 .bbox-ghost { border-color: rgba(44, 24, 16, 0.35); }
+.aesthetic-retro95 .bbox-ghost-num { color: rgba(44, 24, 16, 0.6); }
 .aesthetic-retro95 .bbox-dim {
   color: #2C1810;
   background: #FAF3E6;

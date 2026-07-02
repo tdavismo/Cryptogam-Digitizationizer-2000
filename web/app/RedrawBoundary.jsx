@@ -1,4 +1,4 @@
-/* global React, Icon, ICONS, Placeholder, ScanPreview */
+/* global React, Icon, ICONS, Placeholder */
 const { useState: useStateS3, useEffect: useEffectS3, useMemo: useMemoS3, useRef: useRefS3 } = React;
 
 /* ── Persistent screen state ─────────────────────────────────────────────
@@ -9,45 +9,6 @@ if (!window.__CDZ_REDRAW_STATE) {
   window.__CDZ_REDRAW_STATE = { idx: 0 };
 }
 const RS = window.__CDZ_REDRAW_STATE;
-
-/* Pick a roughly-square grid for the source-context minimap.
-   The exact rows/cols of a real specimen layout aren't known, but matching
-   the per-source packet count makes the "active" highlight read correctly. */
-function _gridFor(n) {
-  if (n <= 1) return { rows: 1, cols: 1 };
-  const cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.3)));
-  const rows = Math.max(1, Math.ceil(n / cols));
-  return { rows, cols };
-}
-
-/* Compute the "auto-zoom" view region around a detection box.
-   We want to show the box itself plus enough context that the volunteer can
-   see what's adjacent (other packets, the edge of the mat, etc.).
-   Returns {vx, vy, vw, vh, scale} where scale converts source-px to
-   container-px and (vx, vy) is the view origin in source pixels. */
-function _viewRegion(box, src, container, marginFrac = 0.35) {
-  const { x, y, w, h } = box;
-  const { source_w: sw, source_h: sh } = src;
-  const { cw, ch } = container;
-  if (!sw || !sh || !cw || !ch) return null;
-
-  // Padded view region around the box, centred on its midpoint
-  const mw = w * marginFrac, mh = h * marginFrac;
-  let vw = w + mw * 2;
-  let vh = h + mh * 2;
-  // Inflate to match the container aspect so the image fills the editor
-  const cAR = cw / ch, vAR = vw / vh;
-  if (vAR > cAR) vh = vw / cAR; else vw = vh * cAR;
-  // Clamp to source bounds, keeping the box centred when possible
-  vw = Math.min(vw, sw); vh = Math.min(vh, sh);
-  let vx = (x + w / 2) - vw / 2;
-  let vy = (y + h / 2) - vh / 2;
-  vx = Math.max(0, Math.min(sw - vw, vx));
-  vy = Math.max(0, Math.min(sh - vh, vy));
-
-  const scale = cw / vw;          // px-on-screen per px-in-source
-  return { vx, vy, vw, vh, scale };
-}
 
 function Handle({ pos, onDrag }) {
   /* Stop the mousedown from bubbling to the bbox body (which would start a
@@ -148,32 +109,9 @@ function RedrawBoundary() {
       .sort((a, b) => a.m.packet_index - b.m.packet_index);
   }, [cur, manifest, cropPaths]);
 
-  const sibIndex = siblings.findIndex((s) => s.p === curPath);
-
-  /* Minimap layout — use the real R×C the user set on Session Setup so the
-     context grid matches the actual specimen layout (a 4×2 capture shows as
-     4 rows × 2 cols, not a rotated guess). Fall back to a square-ish grid only
-     when the session didn't record a layout. */
-  const grid = (() => {
-    const r = session && session.gridRows, c = session && session.gridCols;
-    if (typeof r === "number" && typeof c === "number" && r * c >= siblings.length) {
-      return { rows: r, cols: c };
-    }
-    return _gridFor(siblings.length || 1);
-  })();
-
-  /* Per-cell QC status colour for the minimap. Siblings are packet-index
-     sorted, so sibling array-index j maps to ScanPreview cell j (cell i shows
-     packet i+1). We pull each crop's QC override (approved/flagged) from the
-     shared QC state, falling back to the manifest-derived status. */
+  /* QC status per sibling — colours the ghost outlines so the volunteer sees
+     review state in context (green approved, red flagged) right on the image. */
   const qcOverrides = (window.__CDZ_QC_STATE && window.__CDZ_QC_STATE.overrides) || {};
-  const STATUS_TO_BB = { approved: "green", flagged: "red", none: "red", oversize: "gold" };
-  const miniFlags = {};
-  siblings.forEach((sib, j) => {
-    const ov = qcOverrides[sib.p];
-    const col = STATUS_TO_BB[ov];
-    if (col) miniFlags[j] = col;
-  });
 
   /* draftBox is the user's in-progress redraw — overrides the manifest box
      until Accept (POST /api/redraw + manifest mutation) or Reset (discard). */
@@ -204,37 +142,28 @@ function RedrawBoundary() {
     : (draftBox || (cur ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h } : null));
   const setActiveBox = addMode ? setNewBox : setDraftBox;
 
-  /* Auto-zoom base region around the manifest box, then apply user pan/zoom.
-     Zoom shrinks the region about its centre; pan translates it; both are
-     clamped to the source bounds so you can't scroll off the image. */
+  /* View region: the WHOLE source image fit inside the canvas (no auto-focus —
+     a focused view cut off packets near the image edge and hid the context the
+     volunteer needs). The active box is highlighted instead (dashed outline;
+     siblings drawn as thin ghosts). Wheel-zoom shrinks the region about its
+     centre; pan translates it when zoomed in. Axes where the view is larger
+     than the source are centred (letterboxed). */
   const view = useMemoS3(() => {
-    if (!cur || !container.cw) return null;
-    /* Add mode widens the framing so the un-segmented neighbour packet is
-       visible to draw around; normal mode frames tightly on the current box. */
-    const base = _viewRegion(cur, cur, container, addMode ? 1.4 : 0.35);
-    if (!base) return null;
+    if (!cur || !container.cw || !container.ch) return null;
     const sw = cur.source_w, sh = cur.source_h;
-    let vw = base.vw / zoom, vh = base.vh / zoom;
-    vw = Math.min(vw, sw); vh = Math.min(vh, sh);
-    /* Guarantee pan headroom at base zoom. _viewRegion can inflate the view to
-       fill the whole source in one axis (e.g. a tall box in a wide canvas),
-       which pins the pan clamp to zero and makes panning silently do nothing on
-       some packets. Shrink the region (preserving aspect) so it never exceeds
-       ~90% of the source in either axis — there's always room to drag. At
-       zoom > 1 the region is already smaller, so this never bites. */
-    const fit = Math.min(1, (sw * 0.9) / vw, (sh * 0.9) / vh);
-    vw *= fit; vh *= fit;
-    const cx = base.vx + base.vw / 2 + pan.dx;
-    const cy = base.vy + base.vh / 2 + pan.dy;
-    let vx = cx - vw / 2, vy = cy - vh / 2;
-    vx = Math.max(0, Math.min(sw - vw, vx));
-    vy = Math.max(0, Math.min(sh - vh, vy));
+    if (!sw || !sh) return null;
+    const fitScale = Math.min(container.cw / sw, container.ch / sh);
+    const vw = (container.cw / fitScale) / zoom;
+    const vh = (container.ch / fitScale) / zoom;
+    let vx = sw / 2 - vw / 2 + pan.dx;
+    let vy = sh / 2 - vh / 2 + pan.dy;
+    vx = vw >= sw ? (sw - vw) / 2 : Math.max(0, Math.min(sw - vw, vx));
+    vy = vh >= sh ? (sh - vh) / 2 : Math.max(0, Math.min(sh - vh, vy));
     return { vx, vy, vw, vh, scale: container.cw / vw };
-  }, [cur, container.cw, container.ch, pan, zoom, addMode]);
+  }, [cur, container.cw, container.ch, pan, zoom]);
 
-  /* Reset pan/zoom when the crop changes or add mode toggles (so the framing
-     recomputes cleanly for the new view). */
-  useEffectS3(() => { setPan({ dx: 0, dy: 0 }); setZoom(1); }, [curPath, addMode]);
+  /* Reset pan/zoom when the crop changes. */
+  useEffectS3(() => { setPan({ dx: 0, dy: 0 }); setZoom(1); }, [curPath]);
 
   /* Navigation clears any in-progress draft / new box. */
   function goto(n) {
@@ -508,7 +437,14 @@ function RedrawBoundary() {
         {/* Editor canvas */}
         <div className="editor-wrap grow" style={{ minWidth: 0 }}>
           <div ref={canvasRef} className="editor-canvas"
-               onMouseDown={(e) => { if (e.target === e.currentTarget || e.target.tagName === "IMG") (addMode ? startNewBox(e) : startPan(e)); }}
+               onMouseDown={(e) => {
+                 if (e.target !== e.currentTarget && e.target.tagName !== "IMG") return;
+                 /* Add mode: left-drag draws the new box; right/middle-drag
+                    pans (needed when zoomed in). Normal mode: any drag pans. */
+                 if (addMode && e.button === 0) startNewBox(e);
+                 else startPan(e);
+               }}
+               onContextMenu={(e) => e.preventDefault()}
                onWheel={onWheel}
                style={{ position: "relative", width: "100%", height: "100%",
                         overflow: "hidden",
@@ -516,6 +452,23 @@ function RedrawBoundary() {
             {view && <>
               <img src={"/api/file?path=" + encodeURIComponent(cur.source_path)}
                    alt="" style={imgStyle} draggable={false} />
+              {/* Ghost outlines: every other packet on this source, thin +
+                  greyed (QC-coloured when reviewed) so the active boundary is
+                  edited in full context. */}
+              {siblings.filter((s) => s.p !== curPath).map(({ p, m }) => {
+                const ov = qcOverrides[p];
+                const cls = ov === "approved" ? " ghost-green" : ov === "flagged" ? " ghost-red" : "";
+                return (
+                  <div key={p} className={"bbox-ghost" + cls} style={{
+                    position: "absolute",
+                    left:   (m.x - view.vx) * view.scale,
+                    top:    (m.y - view.vy) * view.scale,
+                    width:  m.w * view.scale,
+                    height: m.h * view.scale,
+                  }}>
+                    <span className="bbox-ghost-num">{String(m.packet_index).padStart(2, "0")}</span>
+                  </div>);
+              })}
               {effective &&
               <div className={"bbox" + (addMode ? " bbox-new" : "")} style={boxStyle}
                    onMouseDown={(e) => startDrag(e, "move")}>
@@ -533,8 +486,8 @@ function RedrawBoundary() {
                                                  fontSize: 10,
                                                  pointerEvents: "none" }}>
               {addMode
-                ? "add packet · drag on the image to draw the new boundary · Esc to cancel"
-                : `packet ${String(cur ? cur.packet_index : 0).padStart(2, "0")} · drag to pan · scroll to zoom${zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}`}
+                ? `add packet · drag to draw the new boundary · right-drag to pan · Esc to cancel${zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}`
+                : `packet ${String(cur ? cur.packet_index : 0).padStart(2, "0")} (dashed) · scroll to zoom · drag to pan${zoom > 1 ? `  (${zoom.toFixed(1)}×)` : ""}`}
             </span>
           </div>
         </div>
@@ -542,19 +495,28 @@ function RedrawBoundary() {
         {/* Right rail */}
         <div className="redraw-rail">
 
+          {/* The old ScanPreview "Source Context" minimap is gone: it laid
+             packets out on an assumed R×C grid, which lied whenever a packet
+             was missed or two merged into one. The editor now shows the whole
+             source image with every real outline, so the context lives where
+             the boxes actually are. */}
           <div className="panel">
-            <div className="panel-head"><span className="panel-title">Source Context</span></div>
+            <div className="panel-head">
+              <span className="panel-title">Source</span>
+            </div>
             <div className="panel-body">
-              <div style={{ height: 168, position: "relative" }}>
-                <ScanPreview rows={grid.rows} cols={grid.cols}
-                  activeIndex={sibIndex >= 0 ? sibIndex : 0}
-                  flagged={miniFlags}
-                  tag={cur ? cur.source_path.split(/[\\/]/).pop() : ""} />
+              <div className="meta-grid">
+                <span className="mk">Image</span>
+                <span className="mv" style={{ overflow: "hidden", textOverflow: "ellipsis" }}
+                  title={cur ? cur.source_path : ""}>
+                  {cur ? cur.source_path.split(/[\\/]/).pop() : "—"}
+                </span>
+                <span className="mk">Packets here</span>
+                <span className="mv">{siblings.length}</span>
               </div>
               <div className="hint" style={{ marginTop: 9 }}>
-                Editing crop <b style={{ color: "var(--text)" }}>
-                  {String(cur ? cur.packet_index : 0).padStart(2, "0")}
-                </b> · cell colours reflect QC status (green = approved, red = flagged).
+                Dashed = boundary being edited · grey outlines = other packets
+                (green approved, red flagged).
               </div>
             </div>
           </div>

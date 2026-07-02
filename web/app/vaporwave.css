@@ -540,8 +540,12 @@
 }
 .aesthetic-vaporwave .bbox {
   border-color: #FF6AD5;
-  box-shadow: 0 0 0 9999px rgba(8, 2, 24, 0.6), 0 0 24px rgba(255, 106, 213, 0.5);
+  box-shadow: 0 0 24px rgba(255, 106, 213, 0.5);
 }
+.aesthetic-vaporwave .bbox.bbox-new { border-color: #05FFA1;
+  box-shadow: 0 0 24px rgba(5, 255, 161, 0.45); }
+.aesthetic-vaporwave .bbox-ghost { border-color: rgba(120, 73, 193, 0.55); }
+.aesthetic-vaporwave .bbox-ghost-num { color: rgba(180, 140, 235, 0.85); }
 .aesthetic-vaporwave .bbox-dim {
   color: #FF6AD5;
   background: rgba(31, 11, 51, 0.92);
