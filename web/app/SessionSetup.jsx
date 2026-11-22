@@ -511,7 +511,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
       <div className="config-strip">
         <div className="strip-grid">
 
-          <div>
+          <div data-ui-id="SET-1">
             <label className="label">Input folder</label>
             <div className="input-row">
               <input className="input" value={folder}
@@ -524,7 +524,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             </div>
           </div>
 
-          <div>
+          <div data-ui-id="SET-2">
             <label className="label">Output folder</label>
             <div className="input-row">
               <input className="input" value={out}
@@ -538,7 +538,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
           </div>
 
           {/* Grid R×C — guides reading-order numbering; does not constrain detection */}
-          <div>
+          <div data-ui-id="SET-3">
             <label className="label">Grid R × C</label>
             <div className="row" style={{ gap: 6 }}>
               <div className="stepper">
@@ -557,7 +557,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
 
           <div className="adv-trigger-wrap">
             <label className="label">Processing</label>
-            <button
+            <button data-ui-id="SET-4"
               className={`btn${advOpen ? " adv-open" : ""}`}
               onClick={() => setAdvOpen((v) => !v)}>
               <Icon d={ICONS.filter} size={13} />
@@ -568,19 +568,19 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             <div className="adv-panel">
                 <span className="adv-panel-title">Advanced Settings</span>
 
-                <div className="adv-field">
+                <div className="adv-field" data-ui-id="SET-4a">
                   <label className="label">Foreground</label>
                   <Seg value={foreground} onChange={setForeground}
                     options={[{ v: "light", label: "Light" }, { v: "dark", label: "Dark" }, { v: "auto", label: "Auto" }]} />
                 </div>
 
-                <div className="adv-field">
+                <div className="adv-field" data-ui-id="SET-4b">
                   <label className="label">Threshold</label>
                   <Seg value={threshold} onChange={setThreshold}
                     options={[{ v: "otsu", label: "Otsu" }, { v: "adaptive", label: "Adaptive" }, { v: "canny", label: "Canny" }]} />
                 </div>
 
-                <div className="adv-field">
+                <div className="adv-field" data-ui-id="SET-4c">
                   <label className="label">Contrast</label>
                   <div className="select-wrap">
                     <select className="input sans" value={contrast}
@@ -593,13 +593,13 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
                   </div>
                 </div>
 
-                <div className="adv-field">
+                <div className="adv-field" data-ui-id="SET-4d">
                   <label className="label">Deskew</label>
                   <Seg value={deskew ? "on" : "off"} onChange={(v) => setDeskew(v === "on")}
                     options={[{ v: "on", label: "On" }, { v: "off", label: "Off" }]} />
                 </div>
 
-                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                <div className="adv-field" data-ui-id="SET-4e" style={{ gridColumn: "1 / -1" }}>
                   <label className="check-row" style={{ marginBottom: 0 }}>
                     <input type="checkbox" checked={autoPortrait}
                       onChange={(e) => setAutoPortrait(e.target.checked)} />
@@ -611,19 +611,19 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
                   </label>
                 </div>
 
-                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                <div className="adv-field" data-ui-id="SET-4f" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Top crop — {topCrop}%</label>
                   <input type="range" className="slider" min="0" max="30" step="1"
                     value={topCrop} onChange={(e) => setTopCrop(+e.target.value)} />
                 </div>
 
-                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                <div className="adv-field" data-ui-id="SET-4g" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Padding — {padding} px</label>
                   <input type="range" className="slider" min="0" max="80" step="1"
                     value={padding} onChange={(e) => setPadding(+e.target.value)} />
                 </div>
 
-                <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+                <div className="adv-field" data-ui-id="SET-4h" style={{ gridColumn: "1 / -1" }}>
                   <label className="label">Min area — {(+minArea).toFixed(2)}%</label>
                   <input type="range" className="slider" min="0.01" max="2" step="0.01"
                     value={minArea} onChange={(e) => setMinArea(+e.target.value)} />
@@ -633,11 +633,11 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
           </div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "stretch", justifyContent: "flex-end" }}>
-            <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+            <button className="btn btn-primary btn-lg" style={{ flex: 1 }} data-ui-id="SET-5"
               onClick={run}>
               <Icon d={running ? ICONS.x : ICONS.play} size={15} /> {running ? "Stop" : "Run"}
             </button>
-            <button className="btn btn-sm" style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+            <button className="btn btn-sm" style={{ flexShrink: 0, whiteSpace: "nowrap" }} data-ui-id="SET-6"
               onClick={openProcessed} disabled={running}
               title="Review or submit crops from a folder segmented earlier">
               <Icon d={ICONS.folder} size={13} /> Open processed…
@@ -648,11 +648,11 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
       </div>
 
       <div className="setup-b-main">
-        <div className="setup-b-preview" style={{ flex: 1, minWidth: 0 }}>
+        <div className="setup-b-preview" data-ui-id="SET-7" style={{ flex: 1, minWidth: 0 }}>
           <LivePreview preview={frames[frameIdx] || null}
                        fallbackRows={rows} fallbackCols={cols} />
           {frames.length > 0 &&
-            <div className="lp-nav">
+            <div className="lp-nav" data-ui-id="SET-8">
               {/* End-of-reel dot to the LEFT of the back arrow — lit on first frame */}
               <span className={"lp-end" + (frameIdx <= 0 ? " on" : "")}>●</span>
               <button className="lp-arrow" disabled={frameIdx <= 0}
@@ -674,7 +674,7 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
             </div>
           }
         </div>
-        <div className="setup-b-log">
+        <div className="setup-b-log" data-ui-id="SET-9">
           <ActivityLog compact lines={logLines} summary={summary} live={running} />
         </div>
       </div>

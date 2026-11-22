@@ -1,5 +1,5 @@
 /* global React, ReactDOM, useTweaks, TweaksPanel, TweakSection, TweakToggle, TweakColor, TweakSelect,
-   FernMark, Icon, ICONS, SessionSetup, QCReview, RedrawBoundary, VVGoSubmission, SettingsMenu */
+   FernMark, Icon, ICONS, SessionSetup, QCReview, RedrawBoundary, VVGoSubmission, SettingsMenu, UiIdOverlay */
 const { useState } = React;
 
 const TABS = [
@@ -21,7 +21,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "fontSize": 100,
   "highContrast": false,
   "reduceMotion": false,
-  "legibilityFont": false
+  "legibilityFont": false,
+  "showUiIds": false
 } /*EDITMODE-END*/;
 
 /* Persist user-facing appearance/accessibility prefs across sessions.
@@ -29,7 +30,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
    we layer a thin localStorage cache on top: seed the defaults from storage on
    first render, and write back whenever a persisted key changes. */
 const CDZ_PREFS_KEY = "cdz_prefs_v1";
-const CDZ_PREF_KEYS = ["aesthetic", "fontSize", "highContrast", "reduceMotion", "legibilityFont"];
+const CDZ_PREF_KEYS = ["aesthetic", "fontSize", "highContrast", "reduceMotion", "legibilityFont", "showUiIds"];
 
 function _loadPrefs(defaults) {
   try {
@@ -51,7 +52,7 @@ function App() {
       for (const k of CDZ_PREF_KEYS) out[k] = t[k];
       localStorage.setItem(CDZ_PREFS_KEY, JSON.stringify(out));
     } catch (e) { /* storage unavailable — non-fatal */ }
-  }, [t.aesthetic, t.fontSize, t.highContrast, t.reduceMotion, t.legibilityFont]);
+  }, [t.aesthetic, t.fontSize, t.highContrast, t.reduceMotion, t.legibilityFont, t.showUiIds]);
 
   /* Cross-screen navigation: QC's "Redraw" button needs to switch to the
      Redraw tab. Stash setTab on window so any screen can call it without
@@ -90,7 +91,7 @@ function App() {
     <div className={appClass} style={{ ...rootStyle, borderStyle: "solid", borderWidth: "0px", padding: "0px", margin: "0px" }}>
       <div className="shell" style={shellStyle}>
         {/* Top bar */}
-        <div className="topbar" data-comment-anchor="c495ac91b5-div-46-9">
+        <div className="topbar" data-comment-anchor="c495ac91b5-div-46-9" data-ui-id="G-1">
           <div className="brand">
             <FernMark color="var(--green)" />
             <div className="brand-text">
@@ -108,7 +109,7 @@ function App() {
         </div>
 
         {/* Tabs */}
-        <div className="tabs" style={{ gap: "4px", borderWidth: "7px 150px 2px 0px", borderRadius: "0px", height: "36px", margin: "0px", padding: "40px 18px 0px" }}>
+        <div className="tabs" data-ui-id="G-3" style={{ gap: "4px", borderWidth: "7px 150px 2px 0px", borderRadius: "0px", height: "36px", margin: "0px", padding: "40px 18px 0px" }}>
           {TABS.map((x) =>
           <button key={x.k} className={`tab ${tab === x.k ? "active" : ""}`} onClick={() => setTab(x.k)}>
               <span className="tnum">{x.n}</span>{x.label}
@@ -141,6 +142,8 @@ function App() {
           {tab === "submit" && <VVGoSubmission />}
         </div>
       </div>
+
+      <UiIdOverlay enabled={!!t.showUiIds} />
 
       <TweaksPanel>
         <TweakSection label="Annotations" />

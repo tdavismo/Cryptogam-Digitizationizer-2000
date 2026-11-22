@@ -11,8 +11,9 @@ Usage
     python launch.py --reload         # development (auto-reload on file save)
     python launch.py --port 9000      # custom port
 
-The desktop Tkinter app is still available by running segmenter_gui.py.
-Both can run simultaneously — they don't share any mutable state.
+Volunteers normally start it by double-clicking "Start Digitizationizer.bat",
+which sets up the Python environment on first run and then calls this script.
+Closing that window stops the server.
 """
 
 from __future__ import annotations
@@ -40,9 +41,26 @@ def _open_browser(url: str, delay: float = 1.5) -> None:
     webbrowser.open(url)
 
 
+def _already_running(host: str, port: int) -> bool:
+    """True if something is already listening on host:port."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
 def main() -> None:
     args   = _parse_args()
     url    = f"http://{args.host}:{args.port}"
+
+    # Double-clicking the launcher a second time shouldn't fail with
+    # "address in use" — just bring the existing app up in the browser.
+    if _already_running(args.host, args.port):
+        print(f"The Digitizationizer is already running at {url} — opening it.")
+        if not args.no_browser:
+            webbrowser.open(url)
+        time.sleep(2)
+        return
 
     print("=" * 60)
     print("  Cryptogam Digitizationizer 2000  —  Web Server")
@@ -57,7 +75,8 @@ def main() -> None:
     print(f"    GET   {url}/api/crops     (list output folder)")
     print(f"    GET   {url}/docs          (interactive API docs)")
     print()
-    print("  Press Ctrl+C to stop.")
+    print("  Keep this window open while you work.")
+    print("  Close it (or press Ctrl+C) to stop the app.")
     print("=" * 60)
 
     if not args.no_browser:

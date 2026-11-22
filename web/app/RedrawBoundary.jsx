@@ -21,7 +21,7 @@ function Handle({ pos, onDrag }) {
 function RedrawEmpty({ msg }) {
   return (
     <div className="qc-empty">
-      <div className="qc-empty-card">
+      <div className="qc-empty-card" data-ui-id="RD-0">
         <Icon paths={ICONS.warn} size={28} />
         <div className="qc-empty-title">{msg.title}</div>
         <div className="qc-empty-sub">{msg.body}</div>
@@ -435,7 +435,7 @@ function RedrawBoundary() {
       <div className="redraw-main">
 
         {/* Editor canvas */}
-        <div className="editor-wrap grow" style={{ minWidth: 0 }}>
+        <div className="editor-wrap grow" data-ui-id="RD-1" style={{ minWidth: 0 }}>
           <div ref={canvasRef} className="editor-canvas"
                onMouseDown={(e) => {
                  if (e.target !== e.currentTarget && e.target.tagName !== "IMG") return;
@@ -470,7 +470,7 @@ function RedrawBoundary() {
                   </div>);
               })}
               {effective &&
-              <div className={"bbox" + (addMode ? " bbox-new" : "")} style={boxStyle}
+              <div className={"bbox" + (addMode ? " bbox-new" : "")} style={boxStyle} data-ui-id="RD-2"
                    onMouseDown={(e) => startDrag(e, "move")}>
                 {["nw","n","ne","e","se","s","sw","w"].map(
                   (h) => <Handle key={h} pos={h} onDrag={startDrag} />)}
@@ -479,7 +479,7 @@ function RedrawBoundary() {
                 </span>
               </div>}
             </>}
-            <span className="ph-label" style={{ position: "absolute", bottom: 12, left: 14,
+            <span className="ph-label" data-ui-id="RD-4" style={{ position: "absolute", bottom: 12, left: 14,
                                                  textAlign: "left",
                                                  color: addMode ? "var(--green)" : "var(--text-3)",
                                                  fontFamily: "var(--mono)",
@@ -500,7 +500,7 @@ function RedrawBoundary() {
              was missed or two merged into one. The editor now shows the whole
              source image with every real outline, so the context lives where
              the boxes actually are. */}
-          <div className="panel">
+          <div className="panel" data-ui-id="RD-5">
             <div className="panel-head">
               <span className="panel-title">Source</span>
             </div>
@@ -521,7 +521,7 @@ function RedrawBoundary() {
             </div>
           </div>
 
-          <div className="panel">
+          <div className="panel" data-ui-id="RD-6">
             <div className="panel-body row between">
               <button className="btn btn-sm"
                 onClick={() => goto(idx - 1)}
@@ -539,7 +539,7 @@ function RedrawBoundary() {
             </div>
           </div>
 
-          <div className="redraw-coords panel">
+          <div className="redraw-coords panel" data-ui-id="RD-7">
             <div className="panel-body">
               <div className="meta-grid">
                 <span className="mk">X · Y</span>
@@ -554,24 +554,24 @@ function RedrawBoundary() {
 
           <div className="redraw-actions">
             {addMode
-              ? <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+              ? <button className="btn btn-primary btn-lg" style={{ flex: 1 }} data-ui-id="RD-8"
                   disabled={!newBox || newBox.w < 10 || newBox.h < 10 || saving}
                   onClick={addPacket}>
                   <Icon d={ICONS.check} size={15} /> {saving ? "Adding…" : "Create Packet"}
                 </button>
-              : <button className="btn btn-primary btn-lg" style={{ flex: 1 }}
+              : <button className="btn btn-primary btn-lg" style={{ flex: 1 }} data-ui-id="RD-8"
                   disabled={!draftBox || saving}
                   onClick={accept}>
                   <Icon d={ICONS.check} size={15} /> {saving ? "Saving…" : "Accept Boundary"}
                 </button>
             }
-            <button className="btn btn-lg" title={addMode ? "Cancel add-packet" : "Reset to detected box"}
+            <button className="btn btn-lg" data-ui-id="RD-9" title={addMode ? "Cancel add-packet" : "Reset to detected box"}
               disabled={addMode ? saving : (!draftBox || saving)}
               onClick={() => (addMode ? toggleAddMode() : setDraftBox(null))}>
               <Icon paths={addMode ? ICONS.x : ICONS.reset} size={15} />
             </button>
           </div>
-          <button className={"btn btn-sm" + (addMode ? " adv-open" : "")}
+          <button className={"btn btn-sm" + (addMode ? " adv-open" : "")} data-ui-id="RD-10"
             style={{ width: "100%", marginTop: 8 }}
             disabled={saving}
             title="Draw a boundary for a packet the batch missed (e.g. the second of two in one image)"
@@ -579,7 +579,7 @@ function RedrawBoundary() {
             <Icon d={ICONS.crop} size={14} /> {addMode ? "Exit add-packet mode" : "Add packet…"}
           </button>
           {flash &&
-            <div className="hint" style={{
+            <div className="hint" data-ui-id="RD-11" style={{
               textAlign: "center",
               color: (flash === "saved" || flash === "added") ? "var(--green)" : "var(--red-bright)",
               fontWeight: 600,
@@ -590,7 +590,7 @@ function RedrawBoundary() {
             </div>
           }
           {!flash &&
-            <div className="hint" style={{ textAlign: "center" }}>
+            <div className="hint" data-ui-id="RD-11" style={{ textAlign: "center" }}>
               {addMode
                 ? <><span className="kbd">Enter</span> create · <span className="kbd">R</span> clear box · <span className="kbd">Esc</span> exit</>
                 : <><span className="kbd">Enter</span> accept · <span className="kbd">R</span> reset · <span className="kbd">←/→</span> prev / next</>}

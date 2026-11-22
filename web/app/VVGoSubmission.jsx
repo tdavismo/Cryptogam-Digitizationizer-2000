@@ -68,7 +68,10 @@ function _retargetJsonDir(outputDir, cur) {
 }
 
 /* ── Per-crop row in the submission table ───────────────────────────────── */
-function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir }) {
+function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir, tagIds }) {
+  /* tagIds: only the first row carries control IDs, so the overlay labels
+     one representative row instead of every row in the table. */
+  const uid = (id) => (tagIds ? id : undefined);
   const st = r.status || "queued";
   const a  = r.audit;
   const attempts = (a && a.attempts) || [];
@@ -80,7 +83,7 @@ function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir }) {
   const lastAttempt = attempts.length ? attempts[attempts.length - 1] : null;
 
   return (
-    <div className={`subrow ${st}`}>
+    <div className={`subrow ${st}`} data-ui-id={uid("VV-11")}>
       <span className="mono crop-id" title={r.path}>{r.stem || r.name}</span>
       <Pill status={st} />
       <div className="trans-cell">
@@ -102,19 +105,19 @@ function SubRow({ r, onView, onHistory, onSubmitOne, jsonDir }) {
       </div>
       <div className="subrow-act" style={{ display: "flex", gap: 6 }}>
         {jsonPath && (st === "received" || st === "complete") &&
-          <button className="btn btn-sm btn-ghost"
+          <button className="btn btn-sm btn-ghost" data-ui-id={uid("VV-12")}
              onClick={() => onView(jsonPath)} title="Preview JSON output">
             <Icon paths={ICONS.eye} size={13} /> View
           </button>
         }
         {attempts.length > 0 &&
-          <button className="btn btn-sm btn-ghost"
+          <button className="btn btn-sm btn-ghost" data-ui-id={uid("VV-13")}
              onClick={() => onHistory(r)} title={`${attempts.length} submission attempt(s)`}>
             <Icon paths={ICONS.doc || ICONS.eye} size={13} /> {attempts.length}
           </button>
         }
         {(st === "needs_output" || st === "errored" || st === "not_submitted") && onSubmitOne &&
-          <button className="btn btn-sm" onClick={() => onSubmitOne(r)} title="Submit this crop now">
+          <button className="btn btn-sm" data-ui-id={uid("VV-14")} onClick={() => onSubmitOne(r)} title="Submit this crop now">
             <Icon paths={ICONS.retry} size={13} /> {st === "not_submitted" ? "Submit" : "Resubmit"}
           </button>
         }
@@ -135,7 +138,7 @@ function AuditModal({ row, jsonDir, onClose, onView }) {
     <div className="json-modal-backdrop" onMouseDown={onClose}>
       <div className="json-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="json-modal-head">
-          <span className="panel-title">Audit · {row.stem || row.name}</span>
+          <span className="panel-title" data-ui-id="VV-16">Audit · {row.stem || row.name}</span>
           <button className="sd-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="json-modal-body">
@@ -207,7 +210,7 @@ function JsonModal({ path, onClose }) {
     <div className="json-modal-backdrop" onMouseDown={onClose}>
       <div className="json-modal" onMouseDown={(e) => e.stopPropagation()}>
         <div className="json-modal-head">
-          <span className="panel-title">{state.name || "JSON record"}</span>
+          <span className="panel-title" data-ui-id="VV-15">{state.name || "JSON record"}</span>
           <button className="sd-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="json-modal-body">
@@ -236,7 +239,7 @@ function JsonModal({ path, onClose }) {
 function VVGoEmpty() {
   return (
     <div className="qc-empty">
-      <div className="qc-empty-card">
+      <div className="qc-empty-card" data-ui-id="VV-0">
         <Icon paths={ICONS.warn} size={28} />
         <div className="qc-empty-title">No batch loaded</div>
         <div className="qc-empty-sub">
@@ -591,7 +594,7 @@ function VVGoSubmission() {
           Single-row toolbar (no wrap) matching the QC toolbar. */}
       <div className="submit-top">
 
-        <div className="st-field st-token">
+        <div className="st-field st-token" data-ui-id="VV-1">
           <label className="label">API token</label>
           <div className="input-row">
             <input className="input" type={showToken ? "text" : "password"}
@@ -609,7 +612,7 @@ function VVGoSubmission() {
           </div>
         </div>
 
-        <div className="st-field st-model">
+        <div className="st-field st-model" data-ui-id="VV-2">
           <label className="label">Model</label>
           <div className="select-wrap">
             <select className="input sans" value={s.vvgo_model}
@@ -619,7 +622,7 @@ function VVGoSubmission() {
           </div>
         </div>
 
-        <div className="st-field st-prompt">
+        <div className="st-field st-prompt" data-ui-id="VV-3">
           <label className="label">Prompt</label>
           <div className="input-row">
             <div className="select-wrap" style={{ flex: 1, minWidth: 0 }}>
@@ -637,7 +640,7 @@ function VVGoSubmission() {
           </div>
         </div>
 
-        <div className="st-field" style={{ flexShrink: 0 }}>
+        <div className="st-field" data-ui-id="VV-4" style={{ flexShrink: 0 }}>
           <label className="label">Scope</label>
           <div className="filterbar" style={{ flexWrap: "nowrap" }}>
             <button className={`fchip ${scope === "approved" ? "on" : ""}`}
@@ -657,10 +660,10 @@ function VVGoSubmission() {
         </div>
 
         <div className="st-actions">
-          <button className="btn btn-sm" onClick={() => setAdvOpen((v) => !v)}>
+          <button className="btn btn-sm" data-ui-id="VV-5" onClick={() => setAdvOpen((v) => !v)}>
             <Icon d={ICONS.filter} size={13} /> Advanced {advOpen ? "▴" : "▾"}
           </button>
-          <button className="btn btn-primary"
+          <button className="btn btn-primary" data-ui-id="VV-6"
             onClick={startSubmission}
             disabled={!eligibleTotal && !running}>
             <Icon d={running ? ICONS.x : ICONS.send} size={15} />
@@ -674,7 +677,7 @@ function VVGoSubmission() {
         <div className="adv-panel adv-panel-vvgo">
           <span className="adv-panel-title">Advanced VVGo Settings</span>
 
-          <div className="adv-field">
+          <div className="adv-field" data-ui-id="VV-7a">
             <label className="label">JSON output folder</label>
             <div className="input-row">
               <input className="input" value={s.vvgo_json_dir}
@@ -695,7 +698,7 @@ function VVGoSubmission() {
             </div>
           </div>
 
-          <div className="adv-field">
+          <div className="adv-field" data-ui-id="VV-7b">
             <label className="label">OCR engine</label>
             <div className="select-wrap">
               <select className="input sans" value={s.vvgo_ocr}
@@ -706,27 +709,27 @@ function VVGoSubmission() {
             </div>
           </div>
 
-          <div className="adv-field" style={{ gridColumn: "1 / -1" }}>
+          <div className="adv-field" data-ui-id="VV-7c" style={{ gridColumn: "1 / -1" }}>
             <label className="label">Parallel workers — {s.vvgo_workers}</label>
             <input type="range" className="slider" min="1" max="16" step="1"
               value={s.vvgo_workers}
               onChange={(e) => patchSetting("vvgo_workers", +e.target.value)} />
           </div>
 
-          <label className="check-row" style={{ gridColumn: "1 / -1" }}>
+          <label className="check-row" data-ui-id="VV-7d" style={{ gridColumn: "1 / -1" }}>
             <input type="checkbox" checked={s.vvgo_wfo}
               onChange={(e) => patchSetting("vvgo_wfo", e.target.checked)} />
             <span>World Flora Online taxonomic validation
               <span className="hint" style={{ marginLeft: 6 }}>— slower; checks scientific names against WFO</span></span>
           </label>
 
-          <label className="check-row" style={{ gridColumn: "1 / -1" }}>
+          <label className="check-row" data-ui-id="VV-7e" style={{ gridColumn: "1 / -1" }}>
             <input type="checkbox" checked={s.vvgo_cop90}
               onChange={(e) => patchSetting("vvgo_cop90", e.target.checked)} />
             <span>Add COP90 elevation data from coordinates</span>
           </label>
 
-          <label className="check-row" style={{ gridColumn: "1 / -1" }}>
+          <label className="check-row" data-ui-id="VV-7f" style={{ gridColumn: "1 / -1" }}>
             <input type="checkbox" checked={s.vvgo_ocr_only}
               onChange={(e) => patchSetting("vvgo_ocr_only", e.target.checked)} />
             <span>OCR only (skip JSON parsing)</span>
@@ -738,7 +741,7 @@ function VVGoSubmission() {
           reflects the whole folder's receipt state and never shifts when the
           user toggles a scope/needs-output filter. While a submission streams,
           the headline shows live progress; the pills/bar stay batch-wide. */}
-      <div className="progress-card panel">
+      <div className="progress-card panel" data-ui-id="VV-8">
         <div className="panel-body">
           <div className="row between" style={{ marginBottom: 10 }}>
             <span className="mono" style={{ fontSize: 12.5, color: "var(--text-2)" }}>
@@ -746,7 +749,7 @@ function VVGoSubmission() {
                 ? `Submitting — ${counts.complete + counts.error} / ${eligibleTotal} this run`
                 : `${bt.received} / ${batchTotal} received`}
             </span>
-            <div className="row" style={{ gap: 14, flexWrap: "wrap" }}>
+            <div className="row" data-ui-id="VV-9" style={{ gap: 14, flexWrap: "wrap" }}>
               <span className="pill green"><span className="pdot" />{bt.received || 0} received</span>
               <span className="pill gold"><span className="pdot" />{bt.needs_output || 0} needs output</span>
               <span className="pill red"><span className="pdot" />{bt.errored || 0} errored</span>
@@ -766,7 +769,7 @@ function VVGoSubmission() {
       </div>
 
       {/* Per-crop table */}
-      <div className="subtable grow">
+      <div className="subtable grow" data-ui-id="VV-10">
         <div className="panel" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
           <div className="subtable-head">
             <span>Crop</span><span>Status</span>
@@ -781,7 +784,7 @@ function VVGoSubmission() {
                   : "No crops in the current batch."}
               </div>
             }
-            {visibleRows.map((r) => <SubRow key={r.path} r={r}
+            {visibleRows.map((r, i) => <SubRow key={r.path} r={r} tagIds={i === 0}
               jsonDir={s.vvgo_json_dir}
               onView={setViewJson}
               onHistory={(row) => setViewAudit(row)}

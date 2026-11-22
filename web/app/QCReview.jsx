@@ -33,7 +33,7 @@ const STATUS_RING = {
 /* ── Card — replaces the synthetic Placeholder with the real packet image.
    We keep the exact wrapper structure (.thumb / .thumb-ph / .thumb-foot)
    so every skin's CSS overrides keep applying without any changes. */
-function CropThumb({ c, selected, multi, receipt, onClick }) {
+function CropThumb({ c, selected, multi, receipt, onClick, uiId }) {
   const ring = STATUS_RING[c.status] || "neutral";
   const cls  = ["thumb", ring,
                 selected ? "sel"   : "",
@@ -49,7 +49,7 @@ function CropThumb({ c, selected, multi, receipt, onClick }) {
     ? { cls: "needs", text: "⧖ sent", title: "Submitted, no JSON yet — resubmit in VVGo" }
     : null;
   return (
-    <button className={cls}
+    <button className={cls} data-ui-id={uiId}
       onClick={(e) => onClick(c, e)}
       onContextMenu={(e) => e.preventDefault()}>
       <div className="thumb-ph">
@@ -59,7 +59,7 @@ function CropThumb({ c, selected, multi, receipt, onClick }) {
           src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path)}
           alt={c.name} />
         <span className="thumb-num">{c.idxLabel}</span>
-        {badge && <span className={`thumb-submitted ${badge.cls}`} title={badge.title}>{badge.text}</span>}
+        {badge && <span className={`thumb-submitted ${badge.cls}`} data-ui-id={uiId ? "QC-9" : undefined} title={badge.title}>{badge.text}</span>}
       </div>
       <div className="thumb-foot">
         <span className="mono"
@@ -75,7 +75,7 @@ function CropThumb({ c, selected, multi, receipt, onClick }) {
 function QCEmpty() {
   return (
     <div className="qc-empty">
-      <div className="qc-empty-card">
+      <div className="qc-empty-card" data-ui-id="QC-0">
         <Icon paths={ICONS.warn} size={28} />
         <div className="qc-empty-title">No batch loaded</div>
         <div className="qc-empty-sub">
@@ -330,13 +330,13 @@ function QCReview() {
 
         {/* Bulk actions */}
         <div className="row" style={{ gap: 8, flexShrink: 0 }}>
-          <button className="btn btn-sm" onClick={bulkApprove}>
+          <button className="btn btn-sm" onClick={bulkApprove} data-ui-id="QC-1">
             <Icon d={ICONS.check} size={14} />{" "}
             {multiSel.size > 0
               ? `Approve ${multiSel.size} selected`
               : "Approve all visible"}
           </button>
-          <button className="btn btn-sm"
+          <button className="btn btn-sm" data-ui-id="QC-2"
             disabled={!cur && multiSel.size === 0}
             onClick={() => {
               setOverrides((prev) => {
@@ -357,7 +357,7 @@ function QCReview() {
         <div className="divider-v" />
 
         {/* Filter chips — expands to fill available space */}
-        <div className="filterbar" style={{ flexWrap: "nowrap", flex: 1, minWidth: 0 }}>
+        <div className="filterbar" data-ui-id="QC-3" style={{ flexWrap: "nowrap", flex: 1, minWidth: 0 }}>
           {FILTERS.map((f) => {
             const n = counts[f.k] || 0;
             return (
@@ -372,14 +372,14 @@ function QCReview() {
 
         {/* Count + finalise */}
         <div className="row" style={{ gap: 8, flexShrink: 0, alignItems: "center" }}>
-          <span className="hint" style={{ whiteSpace: "nowrap" }}>
+          <span className="hint" data-ui-id="QC-4" style={{ whiteSpace: "nowrap" }}>
             <b style={{ color: "var(--green)" }}>{counts.approved || 0}</b> of {counts.all} approved
           </span>
           <div className="row" style={{ gap: 8 }}>
-            <button className="btn btn-sm">
+            <button className="btn btn-sm" data-ui-id="QC-5">
               <Icon d={ICONS.download} size={14} /> Export Crops
             </button>
-            <button className="btn btn-sm btn-primary">
+            <button className="btn btn-sm btn-primary" data-ui-id="QC-6">
               <Icon d={ICONS.send} size={14} /> Proceed to Submission
             </button>
           </div>
@@ -389,7 +389,7 @@ function QCReview() {
 
       <div className="qc-body">
         {/* Thumbnail grid */}
-        <div className="qc-grid-wrap grow">
+        <div className="qc-grid-wrap grow" data-ui-id="QC-7">
           {loading && <div className="qc-msg">Loading crops…</div>}
           {err && <div className="qc-msg err">⚠ {err}</div>}
           {!loading && !err && visible.length === 0 &&
@@ -397,8 +397,8 @@ function QCReview() {
           }
           {!loading && !err && visible.length > 0 &&
             <div className="qc-grid">
-              {visible.map((c) =>
-                <CropThumb key={c.path} c={c}
+              {visible.map((c, i) =>
+                <CropThumb key={c.path} c={c} uiId={i === 0 ? "QC-8" : undefined}
                   selected={cur && cur.path === c.path}
                   multi={multiSel.has(c.path)}
                   receipt={receiptByPath[c.path]}
@@ -409,7 +409,7 @@ function QCReview() {
         </div>
 
         {/* Detail panel */}
-        <div className="qc-detail">
+        <div className="qc-detail" data-ui-id="QC-10">
           <div className="panel" style={{ height: "100%", display: "flex", flexDirection: "column" }}>
             <div className="panel-head">
               <span className="panel-title">Crop Detail</span>
@@ -418,12 +418,12 @@ function QCReview() {
             <div className="panel-body col" style={{ gap: 14, overflowY: "auto" }}>
               {!cur && <div className="hint">No crop selected.</div>}
               {cur && <>
-                <div className="detail-img qc-detail-img">
+                <div className="detail-img qc-detail-img" data-ui-id="QC-11">
                   <img src={"/api/file?path=" + encodeURIComponent(cur.path)} alt={cur.name} />
                 </div>
 
                 {cur.status === "flagged" &&
-                  <div className="callout red col" style={{ gap: 8 }}>
+                  <div className="callout red col" data-ui-id="QC-12" style={{ gap: 8 }}>
                     <span className="row" style={{ gap: 8 }}>
                       <Icon paths={ICONS.warn} size={14} style={{ flexShrink: 0 }} /> Manually flagged
                     </span>
@@ -462,7 +462,7 @@ function QCReview() {
                   </div>
                 }
 
-                <div className="meta-grid">
+                <div className="meta-grid" data-ui-id="QC-13">
                   <span className="mk">Source image</span><span className="mv">{cur.src}</span>
                   <span className="mk">Packet index</span><span className="mv">{cur.idxLabel}</span>
                   <span className="mk">File</span>
@@ -473,7 +473,7 @@ function QCReview() {
                 </div>
 
                 <div className="detail-actions">
-                  <button className={`btn btn-primary${cur.status === "approved" && multiSel.size === 0 ? " active" : ""}`}
+                  <button data-ui-id="QC-14" className={`btn btn-primary${cur.status === "approved" && multiSel.size === 0 ? " active" : ""}`}
                     style={{ flex: 1 }}
                     title={multiSel.size > 0 ? `Approve all ${multiSel.size} selected crops`
                       : cur.status === "approved" ? "Press again to un-approve" : "Approve"}
@@ -482,7 +482,7 @@ function QCReview() {
                     {multiSel.size > 0 ? `Approve ${multiSel.size} selected`
                       : cur.status === "approved" ? "Approved ✓" : "Approve"}
                   </button>
-                  <button className={`btn${cur.status === "flagged" && multiSel.size === 0 ? " active" : ""}`}
+                  <button data-ui-id="QC-15" className={`btn${cur.status === "flagged" && multiSel.size === 0 ? " active" : ""}`}
                     title={multiSel.size > 0 ? `Flag all ${multiSel.size} selected crops`
                       : cur.status === "flagged" ? "Press again to un-flag" : "Flag"}
                     onClick={() => {
@@ -497,7 +497,7 @@ function QCReview() {
                     }}>
                     <Icon paths={ICONS.flag} size={14} /> {multiSel.size > 0 ? `Flag ${multiSel.size} selected` : "Flag"}
                   </button>
-                  <button className="btn"
+                  <button className="btn" data-ui-id="QC-16"
                     disabled={session.hasManifest === false}
                     title={session.hasManifest === false
                       ? "This folder has no boundary manifest (segmented by an older version) — Redraw is unavailable"
@@ -511,7 +511,7 @@ function QCReview() {
                     No boundary manifest in this folder (older segmentation) — Redraw is unavailable.
                   </div>
                 }
-                <div className="hint" style={{ marginTop: -2 }}>
+                <div className="hint" data-ui-id="QC-17" style={{ marginTop: -2 }}>
                   <span className="kbd">A</span> approve · <span className="kbd">F</span> flag · <span className="kbd">R</span> redraw boundary · <span className="kbd">←/→</span> navigate
                 </div>
               </>}
