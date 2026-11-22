@@ -96,22 +96,24 @@ Check every crop, approve the good ones, flag problems.
 | QC-5 | Export Crops | *Not wired yet — does nothing.* |
 | QC-6 | Proceed to Submission | *Not wired yet — use the 04 tab.* |
 | QC-7 | Thumbnail grid | All crops matching QC-3. Reloaded each time you open the tab, so boxes redrawn on 03 show their new image, packets added on 03 appear, and removed ones (QC-18) are gone. |
-| QC-8 | Crop card | Click = select · Shift-click = select a range · ring colour = status (green approved, red flagged, gold oversize). |
+| QC-8 | Crop card | Click = select · Shift-click = select a range · ring colour and right-hand dot = status (green approved, red flagged, gold oversize). |
+| QC-8a | Boundary dot (on a card) | Extra dot left of the status dot: **solid blue** = boundary redrawn on 03, **blue ring** = packet added by hand on 03. Hover for when. |
 | QC-9 | Receipt badge (on a card) | VVGo state from disk: ✓ output / ⧖ sent (no JSON yet) / ✗ error. |
 | QC-10 | Crop Detail panel | Everything about the selected crop. |
 | QC-11 | Detail image | Full-size view of the crop. |
-| QC-12 | Flag note | Free-text reason, shown when a crop is flagged. |
-| QC-13 | Metadata | Source image, packet index, file name, size. |
+| QC-12 | Flag note | Free-text reason, shown when a crop is flagged. Saved as you type. |
+| QC-13 | Metadata | Source image, packet index, file name, size, and Boundary (as detected / redrawn when / added when). |
 | QC-14 | Approve | Approve (press again to un-approve). Acts on the selection if one exists. |
 | QC-15 | Flag | Flag (press again to un-flag). Acts on the selection if one exists. |
 | QC-16 | Redraw | Opens this crop on 03. Disabled for folders with no manifest. |
 | QC-17 | Hotkey hint | **A** approve · **F** flag · **R** redraw · **Del** remove · **← / →** move · **Esc** clear selection. |
 | QC-18 | Remove segmentation / Remove N selected | Takes the crop (or the shift-selected set) out of the batch after a confirmation. Nothing is deleted: the image moves to `<batch>/_removed/`, its manifest row to `_removed/removed_manifest_rows.csv`, and any VVGo JSON to `_removed/vvgo_json/`. |
+| QC-20 | Save status | Beside the approved counter: "saving…", "✓ saved", or "⚠ not saved" (retries automatically every few seconds). |
 | QC-19 | Result line | "✓ Removed N crops" or the error, for a few seconds after QC-18. |
 
-> **Known limitation:** approve/flag decisions and flag notes are kept in the
-> browser only. They survive tab switches but are **lost on page refresh or
-> when the app is restarted**; nothing is written to the folder.
+Approve / flag decisions, flag notes and redraw marks are saved into the batch
+folder (`packet_review.json`) as you work, so they come back when the folder is
+reopened — after a restart, or on another PC.
 
 ---
 
@@ -181,7 +183,8 @@ Inside a crop folder (e.g. `…/04-JUN-2026-PACKETS/`):
 | `packet_manifest.csv` | SET-5, RD-8 (updates a row), RD-8 in add mode (appends a row), QC-18 (removes a row) | Box coordinates per crop. Needed for Redraw. Extra/reordered columns from older versions are preserved. |
 | `vvgo_json/<photo>_packet_NN.json` | VV-6 / VV-14 | VVGo records. Leading `_` dropped so VoucherVision Editor doesn't hide them. |
 | `packet_audit.json` | VV-6 / VV-14 only | Submission history (VV-16). Never written just by opening a folder. |
-| `_removed/` | QC-18 | Removed crops, `removed_manifest_rows.csv` (same columns as the manifest — paste a row back and move the image back to restore), and `vvgo_json/`. Ignored by every screen. |
+| `packet_review.json` | QC-1, QC-2, QC-12, QC-14, QC-15, RD-8 | Saved QC decisions (approved / flagged), flag notes, and redrawn / hand-added marks. Keyed by file name, so it survives moving the folder. Re-running a batch into the same folder clears entries for the crops it rewrites. |
+| `_removed/` | QC-18 | Removed crops, `removed_manifest_rows.csv` (same columns as the manifest — paste a row back and move the image back to restore), `removed_records.json` (its review + submission history) and `vvgo_json/`. Ignored by every screen. |
 
 ## Folder generations
 
@@ -201,3 +204,17 @@ Run it after any change to `server.py`:
 ```powershell
 .venv\Scripts\python.exe tests\compat_check.py
 ```
+
+## Remembered between restarts
+
+| What | Where |
+|------|-------|
+| QC decisions, notes, redraw marks | `packet_review.json` in each batch folder |
+| Boxes edited in Redraw | `packet_manifest.csv` in each batch folder |
+| Input folder (SET-1), grid (SET-3), processing settings (SET-4a…4h) | `~/.cryptogam_config.json` |
+| VVGo model, prompt, advanced options (VV-2, VV-3, VV-7b…7f) | `~/.cryptogam_config.json` (saved automatically) |
+| VVGo API token (VV-1) | `~/.cryptogam_config.json` — only when you press Save |
+| Skin and accessibility settings (S-1…S-6) | this browser |
+
+The output folder (SET-2) is deliberately **not** remembered: left blank it
+makes a new dated folder, and reusing an old one would overwrite it.

@@ -251,6 +251,10 @@ async def batch(req: BatchRequest):
             crop_names = [p.name for r in results for p, _w, _h in r.crop_info]
             if crop_names:
                 _audit_record_segmented(out_dir, crop_names)
+                # Fresh crops under these names: any earlier approval / flag /
+                # redraw mark (from a previous run into this folder) no longer
+                # describes them.
+                _review_forget(out_dir, crop_names)
         except Exception:
             pass
 
@@ -384,6 +388,148 @@ def _audit_record_attempt(folder: Path, crop_name: str, attempt: dict) -> None:
         entry = crops.setdefault(crop_name, {"segmented_at": None, "attempts": []})
         entry.setdefault("attempts", []).append(attempt)
         _audit_save(folder, data)
+
+
+# ---------------------------------------------------------------------------
+# Review sidecar — packet_review.json in each output folder.
+#
+# Holds what a volunteer decided and changed, so reopening a folder shows it:
+#   { "version": 1,
+#     "crops": { "<crop file name>": {
+#         "status":      "approved" | "flagged",     # QC decision (absent = unreviewed)
+#         "note":        "free text",                # flag reason
+#         "reviewed_at": iso,                        # last status/note change
+#         "redrawn_at":  iso, "redraw_count": n,     # boundary redrawn in Redraw
+#         "added_at":    iso } } }                   # packet hand-added in Redraw
+#
+# Keyed by file NAME (not path) so a folder moved/copied to another PC keeps
+# its review. Written only on user actions — opening a folder never writes it.
+# Shares the per-folder audit lock.
+# ---------------------------------------------------------------------------
+
+_REVIEW_NAME = "packet_review.json"
+_REVIEW_STATUSES = {"approved", "flagged"}
+
+
+def _review_load(folder: Path) -> dict:
+    p = folder / _REVIEW_NAME
+    if p.is_file():
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("crops"), dict):
+                return data
+        except Exception:
+            pass
+    return {"version": 1, "crops": {}}
+
+
+def _review_save(folder: Path, data: dict) -> None:
+    tmp = folder / (_REVIEW_NAME + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(folder / _REVIEW_NAME)
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _review_mark(folder: Path, name: str, **fields) -> None:
+    """Merge fields into one crop's review entry (redrawn_at, added_at…)."""
+    with _audit_lock(folder):
+        data = _review_load(folder)
+        entry = data["crops"].setdefault(name, {})
+        if fields.pop("bump_redraw", False):
+            entry["redraw_count"] = int(entry.get("redraw_count") or 0) + 1
+        entry.update(fields)
+        _review_save(folder, data)
+
+
+def _review_forget(folder: Path, names) -> dict:
+    """Drop review entries for *names*; returns what was dropped. Used when a
+    crop is removed or re-segmented, so a later crop reusing the same file name
+    doesn't inherit an old approval."""
+    names = set(names)
+    if not (folder / _REVIEW_NAME).is_file():
+        return {}
+    with _audit_lock(folder):
+        data = _review_load(folder)
+        dropped = {n: data["crops"].pop(n) for n in list(data["crops"]) if n in names}
+        if dropped:
+            _review_save(folder, data)
+    return dropped
+
+
+@app.get("/api/review", summary="Saved QC decisions + redraw marks for a folder",
+         tags=["Gallery"])
+async def get_review(output_dir: str = Query(..., description="PACKETS output folder")):
+    """Read-only. Returns entries only for crops that exist in the folder now,
+    each with its full path so the UI can key by path like /api/crops does."""
+    d = Path(output_dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"Directory not found: {d}")
+    data = _review_load(d)
+    out = {}
+    for name, entry in data["crops"].items():
+        p = d / name
+        if isinstance(entry, dict) and p.is_file():
+            out[name] = {**entry, "path": str(p)}
+    return {"output_dir": str(d), "crops": out}
+
+
+class ReviewUpdate(BaseModel):
+    output_dir: str
+    # { "<crop name>": { "status": "approved"|"flagged"|null, "note": str|null } }
+    updates: dict
+
+
+@app.post("/api/review", summary="Save QC decisions (approve / flag / note)",
+          tags=["Gallery"])
+async def post_review(req: ReviewUpdate):
+    d = Path(req.output_dir)
+    if not d.is_dir():
+        raise HTTPException(404, f"Directory not found: {d}")
+
+    def _do() -> dict:
+        saved, skipped = [], []
+        with _audit_lock(d):
+            data = _review_load(d)
+            crops = data["crops"]
+            for name, upd in (req.updates or {}).items():
+                # Bare file names of crops that exist here — nothing else.
+                if (not isinstance(name, str) or not isinstance(upd, dict)
+                        or name != _crop_basename(name) or not (d / name).is_file()):
+                    skipped.append(name)
+                    continue
+                entry = crops.get(name, {})
+                if "status" in upd:
+                    st = upd["status"]
+                    if st in _REVIEW_STATUSES:
+                        entry["status"] = st
+                    else:
+                        entry.pop("status", None)
+                if "note" in upd:
+                    note = (upd["note"] or "").strip()
+                    if note:
+                        entry["note"] = upd["note"]
+                    else:
+                        entry.pop("note", None)
+                entry["reviewed_at"] = _now_iso()
+                # Drop entries that no longer carry anything worth keeping.
+                if set(entry) <= {"reviewed_at"}:
+                    crops.pop(name, None)
+                else:
+                    crops[name] = entry
+                saved.append(name)
+            if saved:
+                _review_save(d, data)
+        return {"saved": saved, "skipped": skipped}
+
+    try:
+        res = await asyncio.to_thread(_do)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not save review: {exc}")
+    return {"ok": True, **res}
 
 
 @app.get("/api/crops", summary="List crop images in an output directory", tags=["Gallery"])
@@ -987,6 +1133,12 @@ async def redraw(req: RedrawRequest):
                 if manifest_updated:
                     _manifest_write(mf, fieldnames, rows)
 
+        # Remember it was redrawn — QC shows a marker on the card.
+        try:
+            _review_mark(out.parent, out.name, redrawn_at=_now_iso(), bump_redraw=True)
+        except Exception:
+            pass
+
         return {"out_w": int(crop.shape[1]), "out_h": int(crop.shape[0]),
                 "crop_x1": int(cx1), "crop_y1": int(cy1),
                 "crop_x2": int(cx2), "crop_y2": int(cy2),
@@ -1100,6 +1252,13 @@ async def add_packet(req: AddPacketRequest):
 
         try:
             _audit_record_segmented(out_dir, [out.name])
+        except Exception:
+            pass
+        try:
+            # Clear anything left under this name by a removed crop, then mark
+            # it as hand-added so QC can show it.
+            _review_forget(out_dir, [out.name])
+            _review_mark(out_dir, out.name, added_at=_now_iso())
         except Exception:
             pass
 
@@ -1225,6 +1384,33 @@ async def remove_packets(req: RemovePacketsRequest):
                     jp.replace(jdest)
                     jsons.append(str(jdest))
 
+        # 3. Review + submission-history entries go with them, so a packet
+        #    later added under the same file name starts clean instead of
+        #    inheriting this one's approval or VVGo attempts.
+        records = {}
+        for name, entry in _review_forget(out_dir, names).items():
+            records.setdefault(name, {})["review"] = entry
+        popped: dict = {}
+        if (out_dir / _AUDIT_NAME).is_file():
+            with _audit_lock(out_dir):
+                data = _audit_load(out_dir)
+                acrops = data.get("crops", {})
+                popped = {n: acrops.pop(n) for n in list(acrops) if n in names}
+                if popped:
+                    _audit_save(out_dir, data)
+            for name, entry in popped.items():
+                records.setdefault(name, {})["audit"] = entry
+        if records:
+            rec_path = rdir / "removed_records.json"
+            try:
+                log = json.loads(rec_path.read_text(encoding="utf-8")) if rec_path.is_file() else []
+            except Exception:
+                log = []
+            when = _now_iso()
+            for name, rec in records.items():
+                log.append({"name": name, "removed_at": when, **rec})
+            rec_path.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding="utf-8")
+
         return {"removed": moved, "manifest_rows_removed": removed_rows,
                 "json_moved": jsons, "removed_dir": str(rdir)}
 
@@ -1283,6 +1469,11 @@ _CFG_KEYS = {
     "vvgo_token", "vvgo_model", "vvgo_prompt", "vvgo_json_dir",
     "vvgo_workers", "vvgo_ocr", "vvgo_wfo", "vvgo_cop90", "vvgo_ocr_only",
     "setup_rows", "setup_cols", "setup_auto_portrait",
+    # Session Setup — remembered between app restarts. The OUTPUT folder is
+    # deliberately not stored: blank means "new dated folder", and reusing
+    # yesterday's folder would make the next run write into it.
+    "setup_folder", "setup_foreground", "setup_threshold", "setup_contrast",
+    "setup_deskew", "setup_top_crop", "setup_padding", "setup_min_area",
 }
 
 

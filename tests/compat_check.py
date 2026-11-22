@@ -127,6 +127,7 @@ def read_all(out_dir: Path, json_dir: Path | None = None):
     crops = run(server.list_crops(output_dir=str(out_dir)))
     audit = run(server.audit(output_dir=str(out_dir), json_dir=str(json_dir) if json_dir else ""))
     sess = run(server.session_from_folder(output_dir=str(out_dir)))
+    run(server.get_review(output_dir=str(out_dir)))      # must also be read-only
     try:
         manifest = run(server.get_manifest(output_dir=str(out_dir)))
     except HTTPException as exc:
@@ -313,6 +314,58 @@ def main() -> int:
             output_dir=str(out), paths=[add["output_path"]])))
         check((rd / "_SRC_packet_03.jpg").is_file() and (rd / "_SRC_packet_03~2.jpg").is_file(),
               "removing the same name twice keeps both copies")
+
+        # ── Saved review: decisions + redraw marks survive a reopen ─────────
+        print("\n[review] QC decisions and redraw marks are saved with the folder")
+        _, out = build_folder(root, "review", V1_FIELDS, recorded_root=Path("Z:/elsewhere/old_pc"))
+        c1, c2, c3 = (f"_SRC_packet_0{i}.jpg" for i in (1, 2, 3))
+        res = run(server.post_review(server.ReviewUpdate(output_dir=str(out), updates={
+            c1: {"status": "approved", "note": ""},
+            c2: {"status": "flagged", "note": "two packets merged"},
+            "..\\evil.jpg": {"status": "approved"},
+            "nope.jpg": {"status": "approved"},
+        })))
+        check(sorted(res["saved"]) == [c1, c2] and len(res["skipped"]) == 2,
+              "saves real crops, ignores bad / missing names", res)
+        src = run(server.get_manifest(output_dir=str(out)))["crops"][str(out / c3)]["source_path"]
+        run(server.redraw(server.RedrawRequest(source_path=src, output_path=str(out / c3),
+                                               x=1110, y=210, w=380, h=780, padding=PAD)))
+        run(server.redraw(server.RedrawRequest(source_path=src, output_path=str(out / c3),
+                                               x=1100, y=200, w=400, h=800, padding=PAD)))
+        # "Reopen": a fresh read, as the UI does after a restart.
+        rv = run(server.get_review(output_dir=str(out)))["crops"]
+        check(rv.get(c1, {}).get("status") == "approved" and rv[c1]["path"] == str(out / c1),
+              "approval reads back on reopen (keyed to this folder's paths)", rv.get(c1))
+        check(rv.get(c2, {}).get("status") == "flagged" and rv[c2].get("note") == "two packets merged",
+              "flag + note read back on reopen", rv.get(c2))
+        check(rv.get(c3, {}).get("redrawn_at") and rv[c3].get("redraw_count") == 2,
+              "redrawn marker + count read back on reopen", rv.get(c3))
+        run(server.post_review(server.ReviewUpdate(output_dir=str(out), updates={
+            c1: {"status": None, "note": ""}})))
+        rv = run(server.get_review(output_dir=str(out)))["crops"]
+        check(c1 not in rv, "un-approving clears the saved entry", rv.get(c1))
+        add = run(server.add_packet(server.AddPacketRequest(
+            output_dir=str(out), source_path=src, x=50, y=1050, w=300, h=120, padding=10)))
+        rv = run(server.get_review(output_dir=str(out)))["crops"]
+        check(rv.get(add["name"], {}).get("added_at"), "hand-added packet is marked", rv.get(add["name"]))
+        # Remove the flagged crop (with an audit entry), then re-add under that name.
+        (out / "packet_audit.json").write_text(json.dumps({"version": 1, "crops": {
+            c2: {"segmented_at": None, "attempts": [{"ok": False, "error": "x"}]}}}), encoding="utf-8")
+        run(server.remove_packets(server.RemovePacketsRequest(output_dir=str(out), paths=[str(out / c2)])))
+        recs = json.loads((out / "_removed" / "removed_records.json").read_text(encoding="utf-8"))
+        check(recs and recs[0]["name"] == c2 and recs[0]["review"]["status"] == "flagged"
+              and recs[0]["audit"]["attempts"], "removed crop's review + history kept in _removed/", recs)
+        aud = json.loads((out / "packet_audit.json").read_text(encoding="utf-8"))
+        check(c2 not in aud["crops"], "removed crop's history leaves the live audit")
+        # The name freed by removal is not reused by add-packet (it takes max+1),
+        # so simulate reuse directly: a new crop appears under c2's name.
+        shutil.copy(out / c1, out / c2)
+        rv = run(server.get_review(output_dir=str(out)))["crops"]
+        check(c2 not in rv, "a new crop under a removed crop's name starts unreviewed", rv.get(c2))
+        server._review_mark(out, c1, redrawn_at="2026-01-01T00:00:00+00:00")
+        server._review_forget(out, [c1])
+        check(c1 not in run(server.get_review(output_dir=str(out)))["crops"],
+              "re-segmenting a name forgets its old review (batch hook)")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

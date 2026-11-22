@@ -316,9 +316,39 @@ function VVGoSubmission() {
           setKnownPrompts([merged.vvgo_prompt, ...knownPrompts]);
         }
         setS(merged);
+        VV.cfgLoaded = true;
       })
-      .catch(() => setS(DEFAULT_SETTINGS));
+      .catch(() => { setS(DEFAULT_SETTINGS); VV.cfgLoaded = true; });
   }, []);
+
+  /* Remember model / prompt / advanced options between restarts without
+     needing the Save button. The token still saves only via Save (VV-1), and
+     the JSON folder follows the open batch, so neither is auto-written. */
+  useEffectS4(() => {
+    if (!VV.cfgLoaded) return;
+    const t = setTimeout(() => {
+      fetch("/api/config", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vvgo_model: s.vvgo_model, vvgo_prompt: s.vvgo_prompt,
+          vvgo_workers: s.vvgo_workers, vvgo_ocr: s.vvgo_ocr,
+          vvgo_wfo: s.vvgo_wfo, vvgo_cop90: s.vvgo_cop90, vvgo_ocr_only: s.vvgo_ocr_only,
+        }),
+      }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, [s.vvgo_model, s.vvgo_prompt, s.vvgo_workers, s.vvgo_ocr, s.vvgo_wfo, s.vvgo_cop90, s.vvgo_ocr_only]);
+
+  /* Load this folder's saved QC decisions (packet_review.json) so the
+     Approved scope is right even when QC wasn't opened this session. */
+  const [reviewTick, setReviewTick] = useStateS4(0);
+  useEffectS4(() => {
+    if (!session || !session.outputDir || !window.__CDZ_REVIEW) return;
+    let alive = true;
+    window.__CDZ_REVIEW.hydrate(session.outputDir)
+      .then(() => { if (alive) setReviewTick((t) => t + 1); });
+    return () => { alive = false; };
+  }, [session && session.outputDir]);
 
   /* Whenever the active batch changes, pin the JSON output folder to it so the
      audit reads receipts from *this* folder's vvgo_json (a persisted path from a
@@ -382,7 +412,7 @@ function VVGoSubmission() {
       });
     }
     return list;
-  }, [crops, scope, skipSubmitted, auditByPath]);
+  }, [crops, scope, skipSubmitted, auditByPath, reviewTick]);
 
   /* How many of the currently-scoped crops still need an output, for the
      Needs-output chip count. */
@@ -391,7 +421,7 @@ function VVGoSubmission() {
       ? crops
       : crops.filter((c) => (qcState.overrides || {})[c.path] === "approved");
     return base.filter((c) => { const a = auditByPath[c.path]; return !(a && a.received); }).length;
-  }, [crops, scope, auditByPath]);
+  }, [crops, scope, auditByPath, reviewTick]);
 
   /* Live in-run counters from the rows map (used only while a submission is
      streaming, for the moment-to-moment view). */
@@ -576,7 +606,8 @@ function VVGoSubmission() {
     };
   });
 
-  const approvedCount = Object.values(qcState.overrides || {}).filter((v) => v === "approved").length;
+  /* Count approvals among THIS folder's crops only. */
+  const approvedCount = crops.filter((c) => (qcState.overrides || {})[c.path] === "approved").length;
   const eligibleTotal = cropsScoped.length;
 
   /* Batch-wide progress reads from the audit totals (whole folder), NOT the

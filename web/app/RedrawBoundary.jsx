@@ -111,6 +111,16 @@ function RedrawBoundary() {
 
   /* QC status per sibling — colours the ghost outlines so the volunteer sees
      review state in context (green approved, red flagged) right on the image. */
+  /* Load saved decisions if QC hasn't been opened this session, then
+     re-render so the ghost colours reflect them. */
+  const [, setReviewTick] = useStateS3(0);
+  useEffectS3(() => {
+    if (!session || !session.outputDir || !window.__CDZ_REVIEW) return;
+    let alive = true;
+    window.__CDZ_REVIEW.hydrate(session.outputDir)
+      .then(() => { if (alive) setReviewTick((t) => t + 1); });
+    return () => { alive = false; };
+  }, [session && session.outputDir]);
   const qcOverrides = (window.__CDZ_QC_STATE && window.__CDZ_QC_STATE.overrides) || {};
 
   /* draftBox is the user's in-progress redraw — overrides the manifest box
@@ -576,7 +586,7 @@ function RedrawBoundary() {
             disabled={saving}
             title="Draw a boundary for a packet the batch missed (e.g. the second of two in one image)"
             onClick={toggleAddMode}>
-            <Icon d={ICONS.crop} size={14} /> {addMode ? "Exit add-packet mode" : "Add packet…"}
+            <Icon paths={ICONS.crop} size={14} /> {addMode ? "Exit add-packet mode" : "Add packet…"}
           </button>
           {flash &&
             <div className="hint" data-ui-id="RD-11" style={{

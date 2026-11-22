@@ -358,6 +358,47 @@ function SessionSetupB({ rows, cols, setRows, setCols }) {
   const [minArea, setMinArea]       = useSticky("minArea", 0.05);  // %
   const [autoPortrait, setAutoPortrait] = useSticky("autoPortrait", false);
 
+  /* Remember the input folder + processing settings between restarts
+     (~/.cryptogam_config.json). Loaded once per page load; saved shortly after
+     any change. The output folder is intentionally NOT remembered: blank means
+     "make a new dated folder", and reusing an old one would overwrite it. */
+  const SETUP_CFG = [
+    ["setup_folder", folder, setFolder],
+    ["setup_foreground", foreground, setForeground],
+    ["setup_threshold", threshold, setThreshold],
+    ["setup_contrast", contrast, setContrast],
+    ["setup_deskew", deskew, setDeskew],
+    ["setup_top_crop", topCrop, setTopCrop],
+    ["setup_padding", padding, setPadding],
+    ["setup_min_area", minArea, setMinArea],
+    ["setup_auto_portrait", autoPortrait, setAutoPortrait],
+  ];
+  React.useEffect(() => {
+    const ST = window.__CDZ_SETUP_STATE;
+    if (ST.cfgHydrated) return;
+    ST.cfgHydrated = true;
+    fetch("/api/config")
+      .then((r) => r.ok ? r.json() : {})
+      .then((cfg) => {
+        for (const [k, , set] of SETUP_CFG)
+          if (cfg[k] !== undefined && cfg[k] !== null && !(k === "setup_folder" && ST.folder)) set(cfg[k]);
+      })
+      .catch(() => {})
+      .finally(() => { ST.cfgReady = true; });
+  }, []);
+  React.useEffect(() => {
+    if (!window.__CDZ_SETUP_STATE.cfgReady) return;
+    const t = setTimeout(() => {
+      const body = {};
+      for (const [k, v] of SETUP_CFG) body[k] = v;
+      fetch("/api/config", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, SETUP_CFG.map((x) => x[1]));
+
   const addLog = (lvl, m) =>
     setLogLines((prev) => [...(prev || []), { t: _now(), lvl, m }]);
 

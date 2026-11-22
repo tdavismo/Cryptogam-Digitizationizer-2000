@@ -12,6 +12,112 @@ const QC = window.__CDZ_QC_STATE;
    duplicate processing. Stored as a plain object (path → true) so it survives
    tab switches alongside the other QC state. */
 if (!QC.submitted) QC.submitted = {};
+if (!QC.saved) QC.saved = {};   // path → { status, note } as last written to disk
+if (!QC.marks) QC.marks = {};   // path → { redrawn_at, redraw_count, added_at }
+
+/* ── Saved review (packet_review.json in the batch folder) ───────────────
+   QC decisions used to live only in this browser tab and vanished on refresh
+   or restart. This store loads them from the folder (hydrate) and writes
+   every change back (queue → debounced POST /api/review), so reopening a
+   folder — on this PC or another — shows the same approvals, flags, notes and
+   redraw marks. Shared by QC, Redraw (ghost colours) and VVGo (Approved scope).
+
+   hydrate(dir): always refreshes redraw marks; replaces the in-memory
+   decisions only when switching to a different folder (or after a page
+   reload), so unsaved in-memory edits for the current folder are never
+   clobbered by an older disk copy. Resolves true when decisions were replaced. */
+const REVIEW = window.__CDZ_REVIEW || (window.__CDZ_REVIEW = (() => {
+  let pending = {};        // path → { status, note }
+  let pendingDir = null;
+  let timer = null, retry = null;
+  let state = "idle";      // idle | pending | saving | saved | error
+  let lastErr = "";
+  const listeners = new Set();
+  const emit = (st, msg) => { state = st; lastErr = msg || ""; listeners.forEach((fn) => fn(st, lastErr)); };
+  const baseName = (pth) => pth.split(/[\\/]/).pop();
+
+  async function hydrate(outputDir) {
+    if (!outputDir) return false;
+    const fresh = QC.loadedFor !== outputDir;
+    if (fresh && pendingDir && pendingDir !== outputDir) await flush();
+    let j;
+    try {
+      const r = await fetch("/api/review?output_dir=" + encodeURIComponent(outputDir));
+      if (!r.ok) throw new Error(r.statusText);
+      j = await r.json();
+    } catch (e) {
+      emit("error", "couldn't load saved review");
+      return false;
+    }
+    const marks = {}, statuses = {}, notes = {}, saved = {};
+    for (const e of Object.values(j.crops || {})) {
+      if (e.redrawn_at || e.added_at)
+        marks[e.path] = { redrawn_at: e.redrawn_at || null, redraw_count: e.redraw_count || 0,
+                          added_at: e.added_at || null };
+      if (e.status) statuses[e.path] = e.status;
+      if (e.note) notes[e.path] = e.note;
+      saved[e.path] = { status: e.status || null, note: e.note || "" };
+    }
+    QC.marks = marks;
+    if (fresh) {
+      QC.overrides = statuses; QC.notes = notes; QC.saved = saved;
+      QC.multi = new Set(); QC.loadedFor = outputDir;
+      if (state === "error") emit("idle");
+    }
+    return fresh;
+  }
+
+  function queue(outputDir, ups) {
+    if (pendingDir && pendingDir !== outputDir) flush();
+    pendingDir = outputDir;
+    Object.assign(pending, ups);
+    emit("pending");
+    clearTimeout(timer);
+    timer = setTimeout(flush, 400);
+  }
+
+  async function flush(opts) {
+    clearTimeout(timer); timer = null;
+    clearTimeout(retry); retry = null;
+    const dir = pendingDir, batch = pending;
+    pending = {};
+    if (!dir || !Object.keys(batch).length) return;
+    const updates = {};
+    for (const [pth, u] of Object.entries(batch)) updates[baseName(pth)] = { status: u.status, note: u.note };
+    emit("saving");
+    try {
+      const r = await fetch("/api/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output_dir: dir, updates }),
+        keepalive: !!(opts && opts.keepalive),
+      });
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || r.statusText);
+      }
+      if (QC.loadedFor === dir)
+        for (const [pth, u] of Object.entries(batch)) QC.saved[pth] = { status: u.status, note: u.note };
+      emit(Object.keys(pending).length ? "pending" : "saved");
+    } catch (e) {
+      /* Keep them queued (newer edits win) and retry shortly. */
+      for (const [pth, u] of Object.entries(batch)) if (!(pth in pending)) pending[pth] = u;
+      if (!pendingDir) pendingDir = dir;
+      emit("error", e.message);
+      retry = setTimeout(flush, 5000);
+    }
+  }
+
+  /* Last-chance save when the tab is closed or reloaded. */
+  window.addEventListener("pagehide", () => flush({ keepalive: true }));
+
+  return {
+    hydrate, queue, flush,
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    get state() { return state; },
+    get error() { return lastErr; },
+  };
+})());
 
 /* ── Filters ─────────────────────────────────────────────────────────────
    Counts are computed live from the current crop list. */
@@ -33,7 +139,7 @@ const STATUS_RING = {
 /* ── Card — replaces the synthetic Placeholder with the real packet image.
    We keep the exact wrapper structure (.thumb / .thumb-ph / .thumb-foot)
    so every skin's CSS overrides keep applying without any changes. */
-function CropThumb({ c, selected, multi, receipt, onClick, uiId }) {
+function CropThumb({ c, selected, multi, receipt, mark, onClick, uiId }) {
   const ring = STATUS_RING[c.status] || "neutral";
   const cls  = ["thumb", ring,
                 selected ? "sel"   : "",
@@ -66,9 +172,29 @@ function CropThumb({ c, selected, multi, receipt, onClick, uiId }) {
           style={{ fontSize: 9.5, color: "var(--text-3)", overflow: "hidden",
                    textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           title={c.name}>{c.stem}</span>
+        {/* Boundary marker: solid blue = redrawn, blue ring = added by hand
+            (both in Redraw). Saved in packet_review.json, so it persists. */}
+        {mark && (mark.added_at || mark.redrawn_at) &&
+          <span className={`sdot ${mark.added_at ? "added" : "redrawn"}`}
+            data-ui-id={uiId ? "QC-8a" : undefined}
+            title={_markText(mark)} />}
         <span className={`sdot ${ring}`} />
       </div>
     </button>);
+}
+
+/* "Boundary redrawn 22 Nov 14:05 (2×)" / "Added by hand 22 Nov 14:05". */
+function _markText(m) {
+  if (!m) return "As detected";
+  const fmt = (iso) => {
+    try { return new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }); }
+    catch (e) { return iso; }
+  };
+  if (m.added_at)
+    return "Added by hand " + fmt(m.added_at) + (m.redrawn_at ? " · redrawn " + fmt(m.redrawn_at) : "");
+  if (m.redrawn_at)
+    return "Boundary redrawn " + fmt(m.redrawn_at) + (m.redraw_count > 1 ? ` (${m.redraw_count}×)` : "");
+  return "As detected";
 }
 
 /* Empty state shown when no batch has been run yet (no __CDZ_SESSION). */
@@ -96,6 +222,31 @@ function QCReview() {
   const [filter,    setFilter]    = useStateS2("all");
   const [selPath,   setSelPath]   = useStateS2(QC.selectedPath);
   const [multiSel,  setMultiSel]  = useStateS2(() => new Set(QC.multi || []));
+  const [marks,     setMarks]     = useStateS2(() => ({ ...QC.marks }));
+  /* True once this folder's saved review is loaded — autosave waits for it so
+     it can never write stale in-memory state over what's on disk. */
+  const [hydrated,  setHydrated]  = useStateS2(() => !!session && QC.loadedFor === session.outputDir);
+  const [saveState, setSaveState] = useStateS2(REVIEW.state);
+  useEffectS2(() => REVIEW.subscribe((st) => setSaveState(st)), []);
+
+  useEffectS2(() => {
+    if (!session || !session.outputDir) return;
+    let alive = true;
+    REVIEW.hydrate(session.outputDir).then((fresh) => {
+      if (!alive) return;
+      setMarks({ ...QC.marks });
+      if (fresh) {
+        setOverrides({ ...QC.overrides });
+        setNotes({ ...QC.notes });
+        setMultiSel(new Set());
+      }
+      setHydrated(QC.loadedFor === session.outputDir);
+    });
+    return () => { alive = false; };
+  }, [session && session.outputDir]);
+
+  /* Flush any pending save when leaving the QC tab. */
+  useEffectS2(() => () => { REVIEW.flush(); }, []);
   /* Authoritative receipt status per crop, from /api/audit (json-on-disk =
      received). Keyed by crop path. Reloaded on every mount so reopening a
      folder — or returning after a VVGo run — shows the true receipt state,
@@ -173,6 +324,20 @@ function QCReview() {
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
   }, [session && session.outputDir, reloadKey]);
+
+  /* Autosave: diff decisions against what's on disk and queue the changes.
+     Covers every way a status/note changes (buttons, hotkeys, bulk, remove). */
+  useEffectS2(() => {
+    if (!session || !hydrated || QC.loadedFor !== session.outputDir) return;
+    const ups = {};
+    for (const c of crops) {
+      const st = overrides[c.path] || null;
+      const nt = notes[c.path] || "";
+      const sv = QC.saved[c.path] || { status: null, note: "" };
+      if ((sv.status || null) !== st || (sv.note || "") !== nt) ups[c.path] = { status: st, note: nt };
+    }
+    if (Object.keys(ups).length) REVIEW.queue(session.outputDir, ups);
+  }, [overrides, notes, crops, hydrated]);
 
   /* Apply user overrides on top of the derived status. */
   const cropsWithStatus = useMemoS2(() =>
@@ -314,6 +479,8 @@ function QCReview() {
       setOverrides((prev) => { const n = drop(prev); QC.overrides = n; return n; });
       setNotes((prev) => { const n = drop(prev); QC.notes = n; return n; });
       setReceiptByPath((prev) => drop(prev));
+      setMarks((prev) => { const n = drop(prev); QC.marks = n; return n; });
+      QC.saved = drop(QC.saved);   // server already dropped their review entries
       QC.multi = new Set(); setMultiSel(new Set());
       setSelPath(nextPath); QC.selectedPath = nextPath;
       session.packets = Math.max(0, (session.packets || 0) - gone.size);
@@ -447,6 +614,15 @@ function QCReview() {
           <span className="hint" data-ui-id="QC-4" style={{ whiteSpace: "nowrap" }}>
             <b style={{ color: "var(--green)" }}>{counts.approved || 0}</b> of {counts.all} approved
           </span>
+          <span className="hint mono" data-ui-id="QC-20" style={{ whiteSpace: "nowrap",
+              color: saveState === "error" ? "var(--red-bright)" : "var(--text-3)" }}
+            title={saveState === "error"
+              ? "Review decisions couldn't be saved to the folder (" + (REVIEW.error || "error") + ") — retrying"
+              : "Approve / flag / notes are saved to packet_review.json in this folder"}>
+            {saveState === "error" ? "⚠ not saved"
+              : (saveState === "saving" || saveState === "pending") ? "saving…"
+              : saveState === "saved" ? "✓ saved" : ""}
+          </span>
           <div className="row" style={{ gap: 8 }}>
             <button className="btn btn-sm" data-ui-id="QC-5">
               <Icon d={ICONS.download} size={14} /> Export Crops
@@ -474,6 +650,7 @@ function QCReview() {
                   selected={cur && cur.path === c.path}
                   multi={multiSel.has(c.path)}
                   receipt={receiptByPath[c.path]}
+                  mark={marks[c.path]}
                   onClick={selectCrop} />
               )}
             </div>
@@ -542,6 +719,10 @@ function QCReview() {
                     style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{cur.name}</span>
                   <span className="mk">Size</span>
                   <span className="mv">{Math.round((cur.sizeBytes || 0) / 1024)} KB</span>
+                  <span className="mk">Boundary</span>
+                  <span className="mv" style={marks[cur.path] ? { color: "var(--blue)" } : null}>
+                    {_markText(marks[cur.path])}
+                  </span>
                 </div>
 
                 <div className="detail-actions">

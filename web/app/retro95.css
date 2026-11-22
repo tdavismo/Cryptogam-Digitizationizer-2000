@@ -773,6 +773,13 @@
 .aesthetic-retro95 .lp-end { color: rgba(44, 24, 16, 0.25); }
 .aesthetic-retro95 .lp-end.on { color: #E76F51; }
 
+/* ── QC card boundary marker (QC-8a) ─────────────────────────────────────
+   Skin-independent (each skin defines --blue). Solid = redrawn in Redraw,
+   ring = packet added by hand. Sits beside the status dot in the card foot. */
+.sdot.redrawn { background: var(--blue) !important; box-shadow: 0 0 0 1px var(--blue); }
+.sdot.added   { background: transparent !important; box-shadow: inset 0 0 0 2px var(--blue); }
+.thumb-foot .sdot + .sdot { margin-left: -2px; }
+
 /* ── Control-ID overlay (Settings → Show control IDs) ────────────────────
    Skin-independent on purpose; lives in the last-loaded stylesheet so it
    wins over every skin. Outlines don't affect layout; badges sit in one
