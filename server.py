@@ -414,6 +414,18 @@ def _json_name_for_crop(crop_stem: str) -> str:
     return (crop_stem.lstrip("_") or crop_stem) + ".json"
 
 
+def _json_name_candidates(crop_stem: str) -> list[str]:
+    """Every JSON filename that counts as this crop's VVGo output.
+
+    The current naming strips the leading underscore (VV Editor ignores
+    _-prefixed files). The retired desktop app wrote <crop stem>.json with the
+    underscore KEPT, so folders submitted through it must still read as
+    received. Current name first, so it wins when both exist."""
+    current = _json_name_for_crop(crop_stem)
+    legacy = crop_stem + ".json"
+    return [current] if legacy == current else [current, legacy]
+
+
 @app.get("/api/audit",
          summary="Per-crop submission/receipt audit for an output folder",
          tags=["VVGo"])
@@ -453,29 +465,32 @@ async def audit(
         sidecar = _audit_load(d)
         scrops = sidecar.get("crops", {})
 
-        # Backfill segmented_at for any crop missing it (older folders that were
-        # never stamped). One write if anything changed.
+        # Opening a folder is strictly READ-ONLY: crops never stamped (older
+        # folders) get segmented_at derived from the file's mtime in memory.
+        # Only real events (segmentation, submission, add-packet) write the
+        # sidecar, so viewing a previously processed folder never alters it.
         from datetime import datetime, timezone
-        backfilled = False
-        for p in crops:
-            e = scrops.setdefault(p.name, {"segmented_at": None, "attempts": []})
-            if not e.get("segmented_at"):
-                try:
-                    mt = datetime.fromtimestamp(p.stat().st_mtime, timezone.utc)
-                    e["segmented_at"] = mt.isoformat(timespec="seconds")
-                    backfilled = True
-                except Exception:
-                    pass
-        if backfilled:
-            _audit_save(d, sidecar)
+
+        def _mtime_iso(p: Path):
+            try:
+                return datetime.fromtimestamp(
+                    p.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+            except Exception:
+                return None
 
         out_crops = []
         totals = {"total": 0, "received": 0, "needs_output": 0,
                   "errored": 0, "not_submitted": 0}
         for p in crops:
-            jname = _json_name_for_crop(p.stem)
-            received = (jd / jname).is_file()
-            entry = scrops.get(p.name, {"segmented_at": None, "attempts": []})
+            # Either naming generation counts as received (see
+            # _json_name_candidates); report the file that actually exists.
+            cands = _json_name_candidates(p.stem)
+            found = next((n for n in cands if (jd / n).is_file()), None)
+            received = found is not None
+            jname = found or cands[0]
+            entry = dict(scrops.get(p.name) or {"segmented_at": None, "attempts": []})
+            if not entry.get("segmented_at"):
+                entry["segmented_at"] = _mtime_iso(p)
             attempts = entry.get("attempts", [])
             last = attempts[-1] if attempts else None
             submitted = len(attempts) > 0
@@ -798,12 +813,37 @@ async def get_manifest(output_dir: str = Query(..., description="Batch output fo
     if not mf.is_file():
         raise HTTPException(404, f"Manifest not found: {mf}")
 
+    def _basename(s: str) -> str:
+        # Manifests may carry Windows paths from another machine; split on
+        # both separators so the filename is recovered on any OS.
+        return re.split(r"[\\/]", s or "")[-1]
+
     def _read():
         out: dict = {}
         with mf.open("r", encoding="utf-8", newline="") as fh:
             for row in csv.DictReader(fh):
-                src = Path(row["source_image"])
-                crop = row["output_crop"]
+                # Re-home onto THIS folder by filename. The manifest records
+                # absolute paths from segmentation time, which are wrong once a
+                # folder is moved or copied to another machine. Keys must equal
+                # the real crop paths (what QC hands Redraw), and rows whose crop
+                # no longer exists (e.g. replaced by a re-segment) are skipped.
+                rec_crop = row.get("output_crop", "")
+                local = d / _basename(rec_crop)
+                if local.is_file():
+                    crop = str(local)
+                elif rec_crop and Path(rec_crop).is_file():
+                    crop = rec_crop
+                else:
+                    continue
+                src = Path(row.get("source_image", ""))
+                if not src.is_file():
+                    # Default batches put the output folder inside the source
+                    # folder, so look beside / inside this folder for the image.
+                    sname = _basename(row.get("source_image", ""))
+                    for cand in (d.parent / sname, d / sname):
+                        if sname and cand.is_file():
+                            src = cand
+                            break
                 try:
                     bx, by, bw, bh = (int(row["bbox_x"]), int(row["bbox_y"]),
                                       int(row["bbox_w"]), int(row["bbox_h"]))
@@ -981,8 +1021,19 @@ async def add_packet(req: AddPacketRequest):
         })
         mf = out_dir / "packet_manifest.csv"
         existed = mf.is_file()
+        # Append using the manifest's OWN header. Older generations used a
+        # different column set/order (segment_packets_updated.py inserts
+        # threshold_mode + contrast), so writing with MANIFEST_FIELDS would
+        # shift every value into the wrong column and corrupt the file.
+        fieldnames = MANIFEST_FIELDS
+        if existed:
+            with mf.open("r", encoding="utf-8", newline="") as fh:
+                existing = next(csv.reader(fh), None)
+            if existing:
+                fieldnames = existing
         with mf.open("a", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=MANIFEST_FIELDS)
+            writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                    restval="", extrasaction="ignore")
             if not existed:
                 writer.writeheader()
             writer.writerow(row)
@@ -1016,10 +1067,9 @@ async def add_packet(req: AddPacketRequest):
 # ---------------------------------------------------------------------------
 #
 # The browser does NOT talk to VVGo directly: the backend proxies the calls so
-# the API token stays on the user's machine (same trust model as the desktop
-# dialog) and the frontend doesn't need CORS access to the cloud API.  The
-# constants below mirror the values already used by segmenter_gui.py's
-# VVGoDialog so both interfaces share one config file.
+# the API token stays on the user's machine and the frontend doesn't need CORS
+# access to the cloud API.  The config file (.cryptogam_config.json) is the
+# same one the retired desktop app used, so saved tokens carry over.
 
 VVGO_SERVER_URL     = "https://vouchervision-go-738307415303.us-central1.run.app/"
 VVGO_DEFAULT_PROMPT = "SLTPvM_default.yaml"
