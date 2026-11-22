@@ -403,7 +403,10 @@ async def list_crops(output_dir: str = Query(..., description="Path to crops fol
         "output_dir": str(d),
         "count": len(crops),
         "crops": [
-            {"path": str(p), "name": p.name, "stem": p.stem, "size_bytes": p.stat().st_size}
+            # mtime lets the UI cache-bust thumbnails after Redraw rewrites a
+            # crop in place (same path, new pixels).
+            {"path": str(p), "name": p.name, "stem": p.stem,
+             "size_bytes": (st := p.stat()).st_size, "mtime": st.st_mtime_ns}
             for p in crops
         ],
     }
@@ -887,6 +890,38 @@ async def get_manifest(output_dir: str = Query(..., description="Batch output fo
 _MANIFEST_DIM_CACHE: dict = {}
 
 
+# ---------------------------------------------------------------------------
+# Manifest editing — shared by Redraw (update a row), add-packet (append) and
+# remove-packets (drop rows). All edits keep the file's OWN header so older
+# manifest generations (extra / reordered columns) are never corrupted, and go
+# through one lock so concurrent requests can't interleave writes.
+# ---------------------------------------------------------------------------
+
+_MANIFEST_LOCK = _threading.Lock()
+
+
+def _crop_basename(s: str) -> str:
+    """Filename from a manifest path recorded on any OS."""
+    return re.split(r"[\\/]", s or "")[-1]
+
+
+def _manifest_read(mf: Path) -> tuple[list[str], list[dict]]:
+    with mf.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        rows = list(reader)
+        return list(reader.fieldnames or MANIFEST_FIELDS), rows
+
+
+def _manifest_write(mf: Path, fieldnames: list[str], rows: list[dict]) -> None:
+    """Write atomically (temp file + replace) so a crash can't truncate it."""
+    tmp = mf.with_name(mf.name + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=fieldnames, restval="", extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    tmp.replace(mf)
+
+
 class RedrawRequest(BaseModel):
     source_path: str
     output_path: str
@@ -929,9 +964,33 @@ async def redraw(req: RedrawRequest):
         out.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(out), crop):
             raise IOError(f"Could not write: {out}")
+
+        # Persist the new box to the manifest. Without this the crop image
+        # changed but Redraw (and its ghost outlines) re-read the OLD box the
+        # next time the folder or tab was opened.
+        manifest_updated = False
+        mf = out.parent / "packet_manifest.csv"
+        if mf.is_file():
+            with _MANIFEST_LOCK:
+                fieldnames, rows = _manifest_read(mf)
+                for row in rows:
+                    if _crop_basename(row.get("output_crop", "")) == out.name:
+                        row.update({
+                            "bbox_x": req.x, "bbox_y": req.y,
+                            "bbox_w": req.w, "bbox_h": req.h,
+                            "crop_x1": cx1, "crop_y1": cy1,
+                            "crop_x2": cx2, "crop_y2": cy2,
+                            # The redrawn crop is a plain axis-aligned cut.
+                            "deskewed": False,
+                        })
+                        manifest_updated = True
+                if manifest_updated:
+                    _manifest_write(mf, fieldnames, rows)
+
         return {"out_w": int(crop.shape[1]), "out_h": int(crop.shape[0]),
                 "crop_x1": int(cx1), "crop_y1": int(cy1),
-                "crop_x2": int(cx2), "crop_y2": int(cy2)}
+                "crop_x2": int(cx2), "crop_y2": int(cy2),
+                "manifest_updated": manifest_updated}
 
     try:
         info = await asyncio.to_thread(_do)
@@ -1020,23 +1079,24 @@ async def add_packet(req: AddPacketRequest):
             "deskewed": False,
         })
         mf = out_dir / "packet_manifest.csv"
-        existed = mf.is_file()
-        # Append using the manifest's OWN header. Older generations used a
-        # different column set/order (segment_packets_updated.py inserts
-        # threshold_mode + contrast), so writing with MANIFEST_FIELDS would
-        # shift every value into the wrong column and corrupt the file.
-        fieldnames = MANIFEST_FIELDS
-        if existed:
-            with mf.open("r", encoding="utf-8", newline="") as fh:
-                existing = next(csv.reader(fh), None)
-            if existing:
-                fieldnames = existing
-        with mf.open("a", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames,
-                                    restval="", extrasaction="ignore")
-            if not existed:
-                writer.writeheader()
-            writer.writerow(row)
+        with _MANIFEST_LOCK:
+            existed = mf.is_file()
+            # Append using the manifest's OWN header. Older generations used a
+            # different column set/order (segment_packets_updated.py inserts
+            # threshold_mode + contrast), so writing with MANIFEST_FIELDS would
+            # shift every value into the wrong column and corrupt the file.
+            fieldnames = MANIFEST_FIELDS
+            if existed:
+                with mf.open("r", encoding="utf-8", newline="") as fh:
+                    existing = next(csv.reader(fh), None)
+                if existing:
+                    fieldnames = existing
+            with mf.open("a", newline="", encoding="utf-8") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames,
+                                        restval="", extrasaction="ignore")
+                if not existed:
+                    writer.writeheader()
+                writer.writerow(row)
 
         try:
             _audit_record_segmented(out_dir, [out.name])
@@ -1059,6 +1119,121 @@ async def add_packet(req: AddPacketRequest):
         raise HTTPException(422, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"Add packet failed: {exc}")
+    return {"ok": True, **info}
+
+
+class RemovePacketsRequest(BaseModel):
+    output_dir: str
+    paths: list[str] = Field(..., min_length=1)
+    json_dir: str = ""
+
+
+REMOVED_DIRNAME = "_removed"
+
+
+@app.post("/api/remove-packets",
+          summary="Remove packet crops from a batch (recoverably)",
+          tags=["Redraw"])
+async def remove_packets(req: RemovePacketsRequest):
+    """
+    Take bad segmentations out of a batch WITHOUT destroying anything:
+
+      • each crop image moves to <output_dir>/_removed/
+      • its packet_manifest.csv row moves to _removed/removed_manifest_rows.csv
+        (same header, so a row can be pasted back to restore it)
+      • any VVGo JSON already produced for it moves to _removed/vvgo_json/, so
+        the record of a discarded crop doesn't linger beside the good ones
+
+    Everything that lists crops only looks at files directly in output_dir, so
+    the _removed subfolder is invisible to QC / Redraw / VVGo. The submission
+    history in packet_audit.json is left as-is.
+    """
+    out_dir = Path(req.output_dir)
+    if not out_dir.is_dir():
+        raise HTTPException(404, f"Output directory not found: {out_dir}")
+    json_dir = Path(req.json_dir) if req.json_dir else out_dir / "vvgo_json"
+
+    def _free(dest: Path) -> Path:
+        """dest, or dest with a numeric suffix if something is already there
+        (e.g. a re-added packet_05 removed a second time)."""
+        if not dest.exists():
+            return dest
+        n = 2
+        while True:
+            cand = dest.with_name(f"{dest.stem}~{n}{dest.suffix}")
+            if not cand.exists():
+                return cand
+            n += 1
+
+    def _do() -> dict:
+        targets: list[Path] = []
+        for s in req.paths:
+            p = Path(s)
+            # Only crops that live directly in this batch folder — never let a
+            # request move arbitrary files from elsewhere on disk.
+            try:
+                same_dir = p.parent.resolve() == out_dir.resolve()
+            except Exception:
+                same_dir = False
+            if not same_dir or not p.is_file() or p.suffix.lower() not in IMAGE_EXTS \
+                    or not _is_crop_file(p):
+                raise ValueError(f"Not a crop in this folder: {p}")
+            targets.append(p)
+
+        rdir = out_dir / REMOVED_DIRNAME
+        rdir.mkdir(exist_ok=True)
+        names = {p.name for p in targets}
+
+        # 1. Manifest rows out first: if anything later fails, the worst case
+        #    is a crop with no manifest row (Redraw just skips it), never a
+        #    manifest row pointing at a crop that has vanished mid-move.
+        removed_rows = 0
+        mf = out_dir / "packet_manifest.csv"
+        if mf.is_file():
+            with _MANIFEST_LOCK:
+                fieldnames, rows = _manifest_read(mf)
+                keep = [r for r in rows if _crop_basename(r.get("output_crop", "")) not in names]
+                gone = [r for r in rows if _crop_basename(r.get("output_crop", "")) in names]
+                if gone:
+                    log = rdir / "removed_manifest_rows.csv"
+                    new_log = not log.is_file()
+                    log_fields = fieldnames
+                    if not new_log:
+                        with log.open("r", encoding="utf-8", newline="") as fh:
+                            log_fields = next(csv.reader(fh), None) or fieldnames
+                    with log.open("a", encoding="utf-8", newline="") as fh:
+                        w = csv.DictWriter(fh, fieldnames=log_fields,
+                                           restval="", extrasaction="ignore")
+                        if new_log:
+                            w.writeheader()
+                        w.writerows(gone)
+                    _manifest_write(mf, fieldnames, keep)
+                    removed_rows = len(gone)
+
+        # 2. Move the crops (and any JSON outputs) aside.
+        moved, jsons = [], []
+        for p in targets:
+            dest = _free(rdir / p.name)
+            p.replace(dest)
+            moved.append({"from": str(p), "to": str(dest)})
+            for jn in _json_name_candidates(p.stem):
+                jp = json_dir / jn
+                if jp.is_file():
+                    jdest_dir = rdir / "vvgo_json"
+                    jdest_dir.mkdir(exist_ok=True)
+                    jdest = _free(jdest_dir / jn)
+                    jp.replace(jdest)
+                    jsons.append(str(jdest))
+
+        return {"removed": moved, "manifest_rows_removed": removed_rows,
+                "json_moved": jsons, "removed_dir": str(rdir)}
+
+    try:
+        info = await asyncio.to_thread(_do)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"Remove failed: {exc}")
     return {"ok": True, **info}
 
 

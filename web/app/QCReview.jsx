@@ -56,7 +56,7 @@ function CropThumb({ c, selected, multi, receipt, onClick, uiId }) {
         {/* output crops have no EXIF (cv2.imwrite writes raw pixels), so
             oriented=0 is the right + cheaper path for thumbnails */}
         <img className="thumb-img" loading="lazy"
-          src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path)}
+          src={"/api/file?oriented=0&path=" + encodeURIComponent(c.path) + "&v=" + (c.mtime || 0)}
           alt={c.name} />
         <span className="thumb-num">{c.idxLabel}</span>
         {badge && <span className={`thumb-submitted ${badge.cls}`} data-ui-id={uiId ? "QC-9" : undefined} title={badge.title}>{badge.text}</span>}
@@ -101,12 +101,13 @@ function QCReview() {
      folder — or returning after a VVGo run — shows the true receipt state,
      not volatile in-memory flags. */
   const [receiptByPath, setReceiptByPath] = useStateS2({});
-  useEffectS2(() => {
-    if (!session || !session.outputDir) return;
-    /* Use the shared VVGo json folder only when it actually belongs to THIS
-       batch; otherwise let the backend default to <output_dir>/vvgo_json. A
-       persisted path from a previously-open folder would read receipts from the
-       wrong place and undercount what's "received". */
+  /* Bumped to force a fresh /api/crops read (e.g. after a failed remove). */
+  const [reloadKey, setReloadKey] = useStateS2(0);
+  /* The VVGo JSON folder for THIS batch, or "" to let the backend default to
+     <output_dir>/vvgo_json. A persisted path from a previously-open folder
+     would read receipts from the wrong place and undercount "received". */
+  function batchJsonDir() {
+    if (!session || !session.outputDir) return "";
     const shared = (window.__CDZ_VVGO_STATE && window.__CDZ_VVGO_STATE.settings
                 && window.__CDZ_VVGO_STATE.settings.vvgo_json_dir) || "";
     const base = session.outputDir.replace(/[\\/]+$/, "");
@@ -114,7 +115,11 @@ function QCReview() {
     const c = shared.replace(/[\\/]+$/, "");
     const autoShaped = /[\\/]vvgo_json$/i.test(c);
     /* Pass a custom (non-vvgo_json-shaped) path through; drop a stale auto path. */
-    const jd = (!c || (autoShaped && c.toLowerCase() !== want.toLowerCase())) ? "" : shared;
+    return (!c || (autoShaped && c.toLowerCase() !== want.toLowerCase())) ? "" : shared;
+  }
+  useEffectS2(() => {
+    if (!session || !session.outputDir) return;
+    const jd = batchJsonDir();
     const url = "/api/audit?output_dir=" + encodeURIComponent(session.outputDir) +
                 (jd ? "&json_dir=" + encodeURIComponent(jd) : "");
     fetch(url).then((r) => r.ok ? r.json() : Promise.reject())
@@ -156,6 +161,10 @@ function QCReview() {
             packet,
             idxLabel: String(packet).padStart(2, "0"),
             sizeBytes: c.size_bytes,
+            /* File mtime from the server: part of every image URL so a crop
+               Redraw rewrote in place (same path) shows its new pixels
+               instead of the browser's cached copy. */
+            mtime: c.mtime || 0,
             status: isOver ? "oversize" : "unreviewed",
           };
         });
@@ -163,7 +172,7 @@ function QCReview() {
       })
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
-  }, [session && session.outputDir]);
+  }, [session && session.outputDir, reloadKey]);
 
   /* Apply user overrides on top of the derived status. */
   const cropsWithStatus = useMemoS2(() =>
@@ -258,6 +267,67 @@ function QCReview() {
     });
   }
 
+  /* ── Remove segmentation(s) ─────────────────────────────────────────
+     Takes the current crop — or the shift-selected set — out of the batch.
+     Recoverable: the server moves the image (and any VVGo JSON) into
+     <batch>/_removed/ and the manifest row into _removed/removed_manifest_rows.csv. */
+  const [removing, setRemoving] = useStateS2(false);
+  const [qcFlash,  setQcFlash]  = useStateS2(null);
+  async function removeCrops() {
+    if (removing || !session) return;
+    const targets = multiSel.size > 0 ? [...multiSel] : (cur ? [cur.path] : []);
+    if (!targets.length) return;
+    const byPath = Object.fromEntries(cropsWithStatus.map((c) => [c.path, c]));
+    const withJson = targets.filter((p) => receiptByPath[p] === "received").length;
+    const what = targets.length === 1
+      ? `Remove ${(byPath[targets[0]] || {}).name || "this crop"} from the batch?`
+      : `Remove ${targets.length} selected crops from the batch?`;
+    const msg = what +
+      "\n\nThe image" + (targets.length === 1 ? " is" : "s are") +
+      " moved to the \"_removed\" folder inside this batch and taken out of " +
+      "packet_manifest.csv, so " + (targets.length === 1 ? "it no longer appears" : "they no longer appear") +
+      " in QC, Redraw or VVGo. Nothing is permanently deleted." +
+      (withJson ? `\n\n${withJson} already ha${withJson === 1 ? "s" : "ve"} a VVGo JSON record — ` +
+                  "it moves to _removed\\vvgo_json too." : "");
+    if (!window.confirm(msg)) return;
+
+    /* Pick what to select afterwards: the next surviving crop in the visible
+       order after the last removed one, else the one before. */
+    const gone = new Set(targets);
+    const vi = visible.map((c) => c.path);
+    const last = Math.max(...targets.map((p) => vi.indexOf(p)));
+    const nextPath = vi.slice(last + 1).find((p) => !gone.has(p)) ||
+                     [...vi].reverse().find((p) => !gone.has(p)) || null;
+
+    setRemoving(true);
+    try {
+      const r = await fetch("/api/remove-packets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output_dir: session.outputDir, paths: targets, json_dir: batchJsonDir() }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.detail || r.statusText);
+
+      const drop = (obj) => { const n = { ...obj }; for (const p of gone) delete n[p]; return n; };
+      setCrops((prev) => prev.filter((c) => !gone.has(c.path)));
+      setOverrides((prev) => { const n = drop(prev); QC.overrides = n; return n; });
+      setNotes((prev) => { const n = drop(prev); QC.notes = n; return n; });
+      setReceiptByPath((prev) => drop(prev));
+      QC.multi = new Set(); setMultiSel(new Set());
+      setSelPath(nextPath); QC.selectedPath = nextPath;
+      session.packets = Math.max(0, (session.packets || 0) - gone.size);
+      const n = (j.removed || []).length;
+      setQcFlash({ ok: true, text: `Removed ${n} crop${n === 1 ? "" : "s"} → _removed folder` });
+    } catch (e) {
+      setQcFlash({ ok: false, text: "Remove failed: " + e.message });
+      setReloadKey((k) => k + 1);   // resync with whatever is on disk now
+    } finally {
+      setRemoving(false);
+      setTimeout(() => setQcFlash(null), 3500);
+    }
+  }
+
   function openRedrawFor(c) {
     /* Hand off the selected crop to the Redraw screen by *path*, not index.
        Computing an index here is fragile — QC and Redraw could sort the crop
@@ -312,6 +382,8 @@ function QCReview() {
         });
       } else if (k === "r" || k === "R") {
         if (cur && session.hasManifest !== false) { e.preventDefault(); openRedrawFor(cur); }
+      } else if (k === "Delete") {
+        if (cur || multiSel.size > 0) { e.preventDefault(); removeCrops(); }
       } else if (k === "Escape") {
         if (multiSel.size > 0) { QC.multi = new Set(); setMultiSel(new Set()); }
       }
@@ -419,7 +491,7 @@ function QCReview() {
               {!cur && <div className="hint">No crop selected.</div>}
               {cur && <>
                 <div className="detail-img qc-detail-img" data-ui-id="QC-11">
-                  <img src={"/api/file?path=" + encodeURIComponent(cur.path)} alt={cur.name} />
+                  <img src={"/api/file?path=" + encodeURIComponent(cur.path) + "&v=" + (cur.mtime || 0)} alt={cur.name} />
                 </div>
 
                 {cur.status === "flagged" &&
@@ -506,13 +578,29 @@ function QCReview() {
                     <Icon paths={ICONS.crop} size={14} /> Redraw
                   </button>
                 </div>
+                <button className="btn btn-sm" data-ui-id="QC-18"
+                  style={{ width: "100%", color: "var(--red-bright)" }}
+                  disabled={removing}
+                  title="Take this segmentation out of the batch (moved to the _removed folder, not deleted)"
+                  onClick={removeCrops}>
+                  <Icon d={ICONS.x} size={13} />{" "}
+                  {removing ? "Removing…"
+                    : multiSel.size > 0 ? `Remove ${multiSel.size} selected segmentations`
+                    : "Remove segmentation"}
+                </button>
+                {qcFlash &&
+                  <div className="hint" data-ui-id="QC-19" style={{ marginTop: -4, fontWeight: 600,
+                    color: qcFlash.ok ? "var(--green)" : "var(--red-bright)" }}>
+                    {qcFlash.ok ? "✓ " : "✗ "}{qcFlash.text}
+                  </div>
+                }
                 {session.hasManifest === false &&
                   <div className="hint" style={{ marginTop: -2, color: "var(--gold)" }}>
                     No boundary manifest in this folder (older segmentation) — Redraw is unavailable.
                   </div>
                 }
                 <div className="hint" data-ui-id="QC-17" style={{ marginTop: -2 }}>
-                  <span className="kbd">A</span> approve · <span className="kbd">F</span> flag · <span className="kbd">R</span> redraw boundary · <span className="kbd">←/→</span> navigate
+                  <span className="kbd">A</span> approve · <span className="kbd">F</span> flag · <span className="kbd">R</span> redraw boundary · <span className="kbd">Del</span> remove · <span className="kbd">←/→</span> navigate
                 </div>
               </>}
             </div>

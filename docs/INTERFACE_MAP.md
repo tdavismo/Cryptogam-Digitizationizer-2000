@@ -95,7 +95,7 @@ Check every crop, approve the good ones, flag problems.
 | QC-4 | Approved counter | "N of M approved". |
 | QC-5 | Export Crops | *Not wired yet — does nothing.* |
 | QC-6 | Proceed to Submission | *Not wired yet — use the 04 tab.* |
-| QC-7 | Thumbnail grid | All crops matching QC-3. |
+| QC-7 | Thumbnail grid | All crops matching QC-3. Reloaded each time you open the tab, so boxes redrawn on 03 show their new image, packets added on 03 appear, and removed ones (QC-18) are gone. |
 | QC-8 | Crop card | Click = select · Shift-click = select a range · ring colour = status (green approved, red flagged, gold oversize). |
 | QC-9 | Receipt badge (on a card) | VVGo state from disk: ✓ output / ⧖ sent (no JSON yet) / ✗ error. |
 | QC-10 | Crop Detail panel | Everything about the selected crop. |
@@ -105,7 +105,9 @@ Check every crop, approve the good ones, flag problems.
 | QC-14 | Approve | Approve (press again to un-approve). Acts on the selection if one exists. |
 | QC-15 | Flag | Flag (press again to un-flag). Acts on the selection if one exists. |
 | QC-16 | Redraw | Opens this crop on 03. Disabled for folders with no manifest. |
-| QC-17 | Hotkey hint | **A** approve · **F** flag · **R** redraw · **← / →** move · **Esc** clear selection. |
+| QC-17 | Hotkey hint | **A** approve · **F** flag · **R** redraw · **Del** remove · **← / →** move · **Esc** clear selection. |
+| QC-18 | Remove segmentation / Remove N selected | Takes the crop (or the shift-selected set) out of the batch after a confirmation. Nothing is deleted: the image moves to `<batch>/_removed/`, its manifest row to `_removed/removed_manifest_rows.csv`, and any VVGo JSON to `_removed/vvgo_json/`. |
+| QC-19 | Result line | "✓ Removed N crops" or the error, for a few seconds after QC-18. |
 
 > **Known limitation:** approve/flag decisions and flag notes are kept in the
 > browser only. They survive tab switches but are **lost on page refresh or
@@ -128,7 +130,7 @@ Accepting rewrites that crop image and its manifest row.
 | RD-5 | Source panel | Source photo name and how many packets it has. |
 | RD-6 | Prev / Next | Step through crops (also ← / →). |
 | RD-7 | Coordinates | X·Y, W·H of the box in source-photo pixels, and padding. |
-| RD-8 | Accept Boundary / Create Packet | Saves the edited box (Enter), or creates the new packet in add mode. |
+| RD-8 | Accept Boundary / Create Packet | Saves the edited box (Enter): rewrites the crop image **and** its manifest row, so the new box is still there next time. In add mode, creates the new packet. |
 | RD-9 | Reset / Cancel | Reset the box to the detected one (R), or cancel add mode. |
 | RD-10 | Add packet… / Exit add-packet mode | Toggle drawing a brand-new packet on this photo. |
 | RD-11 | Result / hotkey line | "✓ Crop saved", "✓ New packet created", errors, or the hotkeys. |
@@ -176,9 +178,10 @@ Inside a crop folder (e.g. `…/04-JUN-2026-PACKETS/`):
 | File | Written by | Notes |
 |------|-----------|-------|
 | `_<photo>_packet_NN.jpg` | SET-5, RD-8 | The crops. |
-| `packet_manifest.csv` | SET-5, RD-8 (rewrites a row), RD-8 in add mode (appends a row) | Box coordinates per crop. Needed for Redraw. Extra/reordered columns from older versions are preserved. |
+| `packet_manifest.csv` | SET-5, RD-8 (updates a row), RD-8 in add mode (appends a row), QC-18 (removes a row) | Box coordinates per crop. Needed for Redraw. Extra/reordered columns from older versions are preserved. |
 | `vvgo_json/<photo>_packet_NN.json` | VV-6 / VV-14 | VVGo records. Leading `_` dropped so VoucherVision Editor doesn't hide them. |
 | `packet_audit.json` | VV-6 / VV-14 only | Submission history (VV-16). Never written just by opening a folder. |
+| `_removed/` | QC-18 | Removed crops, `removed_manifest_rows.csv` (same columns as the manifest — paste a row back and move the image back to restore), and `vvgo_json/`. Ignored by every screen. |
 
 ## Folder generations
 

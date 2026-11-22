@@ -241,6 +241,78 @@ def main() -> int:
                            for e in mani["crops"].values()),
               "source dimensions resolved for moved folder")
         assert_read_only("moved", before, snapshot(out))
+
+        # ── Redraw persists the new box (moved + extra-column manifest) ──────
+        print("\n[redraw] accept writes the new box to the manifest")
+        _, out = build_folder(root, "redraw", UPDATED_FIELDS,
+                              recorded_root=Path("Z:/elsewhere/old_pc"))
+        target = out / "_SRC_packet_02.jpg"
+        mtime0 = {c["name"]: c["mtime"] for c in run(server.list_crops(output_dir=str(out)))["crops"]}
+        src = run(server.get_manifest(output_dir=str(out)))["crops"][str(target)]["source_path"]
+        import time as _t; _t.sleep(0.05)
+        res = run(server.redraw(server.RedrawRequest(
+            source_path=src, output_path=str(target), x=650, y=250, w=300, h=700, padding=PAD)))
+        check(res.get("manifest_updated") is True, "redraw reports the manifest row updated", res)
+        with (out / "packet_manifest.csv").open(encoding="utf-8", newline="") as fh:
+            rdr = csv.DictReader(fh)
+            header, rows = rdr.fieldnames, list(rdr)
+        check(header == UPDATED_FIELDS, "redraw keeps the original manifest header", header)
+        r2 = rows[1]
+        check((r2["bbox_x"], r2["bbox_y"], r2["bbox_w"], r2["bbox_h"]) == ("650", "250", "300", "700")
+              and r2["threshold_mode"] == "otsu" and r2["output_crop"].startswith("Z:"),
+              "redrawn row updated in place, other columns untouched", r2)
+        check(all((int(r["bbox_x"]), int(r["bbox_y"]), int(r["bbox_w"]), int(r["bbox_h"])) == BOXES[i]
+                  for i, r in ((0, rows[0]), (2, rows[2]))), "other rows unchanged")
+        e = run(server.get_manifest(output_dir=str(out)))["crops"][str(target)]
+        check((e["x"], e["y"], e["w"], e["h"], e["padding"]) == (650, 250, 300, 700, PAD),
+              "reopening Redraw shows the redrawn box", e)
+        mtime1 = {c["name"]: c["mtime"] for c in run(server.list_crops(output_dir=str(out)))["crops"]}
+        check(mtime1["_SRC_packet_02.jpg"] != mtime0["_SRC_packet_02.jpg"]
+              and mtime1["_SRC_packet_01.jpg"] == mtime0["_SRC_packet_01.jpg"],
+              "crop list mtime changes only for the redrawn crop (QC thumbnail refresh)")
+
+        # ── Remove segmentations ──────────────────────────────────────────
+        print("\n[remove] remove-packets moves crops aside recoverably")
+        _, out = build_folder(root, "remove", V1_FIELDS)
+        jd = out / "vvgo_json"
+        jd.mkdir()
+        (jd / "_SRC_packet_01.json").write_text("{}", encoding="utf-8")   # exe-era name
+        (jd / "SRC_packet_02.json").write_text("{}", encoding="utf-8")    # current name
+        before = snapshot(out)
+        try:
+            run(server.remove_packets(server.RemovePacketsRequest(
+                output_dir=str(out), paths=[str(out.parent / "_SRC.jpg")])))
+            rejected = False
+        except HTTPException as exc:
+            rejected = exc.status_code == 422
+        check(rejected and snapshot(out) == before,
+              "refuses files outside the batch folder and changes nothing")
+        res = run(server.remove_packets(server.RemovePacketsRequest(
+            output_dir=str(out), paths=[str(out / "_SRC_packet_01.jpg"), str(out / "_SRC_packet_03.jpg")])))
+        rd = out / "_removed"
+        check((rd / "_SRC_packet_01.jpg").is_file() and (rd / "_SRC_packet_03.jpg").is_file()
+              and not (out / "_SRC_packet_01.jpg").exists(), "crop images moved to _removed/")
+        check(res["manifest_rows_removed"] == 2, "two manifest rows removed", res)
+        with (rd / "removed_manifest_rows.csv").open(encoding="utf-8", newline="") as fh:
+            log = list(csv.DictReader(fh))
+        check([r["packet_index"] for r in log] == ["1", "3"],
+              "removed rows kept in _removed/removed_manifest_rows.csv", log)
+        check((rd / "vvgo_json" / "_SRC_packet_01.json").is_file()
+              and (jd / "SRC_packet_02.json").is_file(),
+              "removed crop's JSON moved aside; kept crop's JSON untouched")
+        crops, audit, sess, mani = read_all(out, jd)
+        check(crops["count"] == 1 and audit["totals"]["total"] == 1 and audit["totals"]["received"] == 1,
+              "QC/VVGo no longer list removed crops", (crops["count"], audit["totals"]))
+        check(mani["count"] == 1 and sess["packets"] == 1, "Redraw + reopen no longer list them",
+              (mani["count"], sess["packets"]))
+        # Re-add a packet (takes index 03 again), then remove it: no clobbering.
+        add = run(server.add_packet(server.AddPacketRequest(
+            output_dir=str(out), source_path=str(out.parent / "_SRC.jpg"),
+            x=1100, y=200, w=400, h=800, padding=PAD)))
+        run(server.remove_packets(server.RemovePacketsRequest(
+            output_dir=str(out), paths=[add["output_path"]])))
+        check((rd / "_SRC_packet_03.jpg").is_file() and (rd / "_SRC_packet_03~2.jpg").is_file(),
+              "removing the same name twice keeps both copies")
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
